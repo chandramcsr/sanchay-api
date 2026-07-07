@@ -1,8 +1,14 @@
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
 from app.core.database import Base, engine
+from app.core.error_handlers import validation_exception_handler
+from app.core.limiter import limiter
 from app.models import user  # noqa: F401 — registers the model with Base.metadata
 from app.routers import auth
 
@@ -16,6 +22,11 @@ app = FastAPI(
     description="Identity and auth service for Sanchay. Does not store financial data.",
     version="0.1.0",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

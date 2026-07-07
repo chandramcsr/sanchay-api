@@ -115,16 +115,14 @@ container start via `CMD` in the Dockerfile.
 - **Refresh tokens** — access tokens are long-lived (7 days) with no
   refresh/revoke mechanism. Fine for v1; a refresh-token flow is the
   natural next step if that expiry feels wrong in practice.
-- **422 validation errors echo the submitted request body**, including
-  the plaintext password field — this is default FastAPI/Pydantic
-  behavior (the error detail includes `input` for debugging), and it
-  means a malformed signup/login request can put a plaintext password
-  into a 422 response body, and from there into logs, error trackers,
-  or browser devtools network tabs. Not exploitable by an attacker
-  (they'd need the password already to trigger it usefully), but worth
-  closing before this handles real traffic — either a custom exception
-  handler that strips `password` from validation error bodies, or
-  switching `password` fields to Pydantic's `SecretStr`.
+- ~~422 validation errors echo the submitted password~~ — **fixed**:
+  a custom exception handler (`app/core/error_handlers.py`) redacts
+  any `password` field from validation error responses before they
+  leave the server.
+- ~~No rate limiting~~ — **fixed**: login is limited to 5 attempts/min
+  and signup to 10/min per IP, via `slowapi` (`app/core/limiter.py`).
+  Worth revisiting the exact numbers once there's real traffic to
+  learn from; these are reasonable starting guesses, not tuned values.
 - **Syncing actual ledger data** — this is Phase 1d, much larger
   (end-to-end encryption, conflict resolution, an op-log), and comes
   after this identity layer proves out.
