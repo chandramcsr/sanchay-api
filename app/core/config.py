@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     cors_origins: str = "http://localhost:5173,https://chandramcsr.github.io"
+    frontend_url: str = "https://chandramcsr.github.io/ledger-app/"
+    password_reset_token_expire_minutes: int = 30
 
     @property
     def cors_origin_list(self) -> list[str]:

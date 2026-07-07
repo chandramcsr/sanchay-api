@@ -48,3 +48,18 @@ def _fresh_schema():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture
+def db_session():
+    """
+    Direct DB access for tests that need to set up state the HTTP API
+    has no endpoint for (e.g. inserting a password reset token as if
+    an email had just been sent). Shares the same in-memory database
+    the app's overridden get_db() uses, via the same engine.
+    """
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

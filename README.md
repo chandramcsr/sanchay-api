@@ -75,9 +75,12 @@ checks worth knowing about:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | — | Liveness check |
+| GET | `/` | — | Service info, mainly for Render's uptime ping |
 | POST | `/auth/signup` | — | Create account, returns a JWT |
 | POST | `/auth/login` | — | Returns a JWT |
 | GET | `/auth/me` | Bearer token | Current user's profile |
+| POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
+| POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 
 Full interactive docs (Swagger UI) at `/docs` once running.
 
@@ -115,6 +118,21 @@ container start via `CMD` in the Dockerfile.
 - **Refresh tokens** — access tokens are long-lived (7 days) with no
   refresh/revoke mechanism. Fine for v1; a refresh-token flow is the
   natural next step if that expiry feels wrong in practice.
+- ~~No password reset~~ — **built, but not fully wired**: the
+  request/confirm flow, token generation (hashed, single-use,
+  30-minute expiry), and rate limiting are all real and tested. What's
+  missing is an actual email provider — `app/core/email.py` currently
+  logs the reset link to stdout instead of sending it (clearly marked
+  `LoggingEmailSender`, DEV-ONLY in the code). Swapping in a real
+  provider (Resend, SendGrid, Postmark) is a one-file change behind
+  the `EmailSender` interface; see the extension-point example in that
+  file. **Do not consider this feature complete for real users until
+  a real sender is wired in** — right now, anyone who forgets their
+  password has no way to actually receive the link.
+- **No email verification** at signup — someone could sign up with an
+  email they don't own. Combined with the point above, wiring a real
+  email provider would let both gaps be closed together (verification
+  link + reset link use the same underlying "send an email" plumbing).
 - ~~422 validation errors echo the submitted password~~ — **fixed**:
   a custom exception handler (`app/core/error_handlers.py`) redacts
   any `password` field from validation error responses before they
