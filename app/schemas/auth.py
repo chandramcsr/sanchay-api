@@ -8,7 +8,17 @@ MIN_PASSWORD_LENGTH = 8
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
-    display_name: str | None = None
+    display_name: str
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Name is required")
+        if len(v) > 100:
+            raise ValueError("Name must be 100 characters or fewer")
+        return v
 
     @field_validator("password")
     @classmethod
