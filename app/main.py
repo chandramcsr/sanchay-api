@@ -39,6 +39,17 @@ app.add_middleware(
 app.include_router(auth.router)
 
 
+@app.get("/")
+def root() -> dict[str, str]:
+    """
+    Not a duplicate of /health — this exists so Render's own uptime
+    ping (a HEAD/GET to '/') gets a real 200 instead of a 404, and so
+    anyone who opens the bare URL in a browser sees something useful
+    instead of "Not Found".
+    """
+    return {"service": "sanchay-api", "status": "ok", "docs": "/docs"}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}

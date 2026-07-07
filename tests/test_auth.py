@@ -4,6 +4,12 @@ def test_health(client):
     assert r.json() == {"status": "ok"}
 
 
+def test_root(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.json()["service"] == "sanchay-api"
+
+
 def test_signup_creates_user_and_returns_token(client):
     r = client.post("/auth/signup", json={"email": "chandra@example.com", "password": "hunter22", "display_name": "Chandra"})
     assert r.status_code == 201
