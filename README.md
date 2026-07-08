@@ -83,6 +83,7 @@ checks worth knowing about:
 | GET | `/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
 | GET | `/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
 | PUT | `/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
+| DELETE | `/auth/me` | Bearer token + password | Permanently deletes the account and all associated data (sync backup, login history, reset tokens) — immediate, no recovery |
 | POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
 | POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 

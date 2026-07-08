@@ -10,10 +10,12 @@ from app.core.limiter import limiter
 from app.core.reset_tokens import generate_reset_token, hash_reset_token
 from app.core.security import create_access_token, hash_password, verify_password
 from app.core.config import settings
+from app.models.encrypted_ledger import EncryptedLedger
 from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.schemas.auth import (
+    DeleteAccountRequest,
     ForgotPasswordRequest,
     LoginEventOut,
     LoginRequest,
@@ -170,3 +172,36 @@ def login_history(
         .limit(min(limit, 100))
         .all()
     )
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("3/hour")
+def delete_account(
+    request: Request,
+    payload: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    """
+    Permanently deletes the account and everything tied to it — not a
+    soft deactivate. Matches the privacy policy's explicit promise:
+    "permanently removes... all associated server-side data." No
+    grace period, no recovery; the confirmation step (re-entering
+    your password) is the safety net against an accidental call, not
+    an undo window afterward.
+
+    Deletes, in order: any encrypted Sync backup, password reset
+    tokens, login history, then the user record itself. The user's
+    local ledger (on-device) is completely unaffected — this only
+    touches identity/server-side data. If Sync was enabled, that
+    encrypted backup is now permanently gone too, same as forgetting
+    the sync passphrase.
+    """
+    if not verify_password(payload.password, current_user.hashed_password):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
+
+    db.query(EncryptedLedger).filter(EncryptedLedger.user_id == current_user.id).delete()
+    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == current_user.id).delete()
+    db.query(LoginEvent).filter(LoginEvent.user_id == current_user.id).delete()
+    db.delete(current_user)
+    db.commit()

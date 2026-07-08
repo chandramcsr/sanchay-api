@@ -49,6 +49,10 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
+class DeleteAccountRequest(BaseModel):
+    password: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
