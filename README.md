@@ -80,6 +80,9 @@ checks worth knowing about:
 | POST | `/auth/login` | — | Returns a JWT |
 | GET | `/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
 | GET | `/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
+| GET | `/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
+| GET | `/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
+| PUT | `/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
 | POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
 | POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 

@@ -10,7 +10,7 @@ from app.core.database import Base, engine
 from app.core.error_handlers import validation_exception_handler
 from app.core.limiter import limiter
 from app.models import user  # noqa: F401 — registers the model with Base.metadata
-from app.routers import auth
+from app.routers import auth, sync
 
 # Dev/SQLite convenience only: creates tables if they don't exist.
 # Postgres in real deployments is migrated with Alembic (see alembic/),
@@ -20,7 +20,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.state.limiter = limiter
@@ -37,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(sync.router)
 
 
 @app.get("/")
