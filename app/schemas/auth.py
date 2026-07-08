@@ -53,6 +53,10 @@ class DeleteAccountRequest(BaseModel):
     password: str
 
 
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -63,6 +67,7 @@ class UserOut(BaseModel):
     email: EmailStr
     display_name: str | None = None
     last_login_at: datetime | None = None
+    is_verified: bool = False
 
     model_config = {"from_attributes": True}
 

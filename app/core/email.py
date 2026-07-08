@@ -20,6 +20,9 @@ class EmailSender(ABC):
     @abstractmethod
     def send_password_reset(self, to_email: str, reset_link: str) -> None: ...
 
+    @abstractmethod
+    def send_verification(self, to_email: str, verify_link: str) -> None: ...
+
 
 class LoggingEmailSender(EmailSender):
     """
@@ -35,6 +38,14 @@ class LoggingEmailSender(EmailSender):
             "Password reset for %s: %s",
             to_email,
             reset_link,
+        )
+
+    def send_verification(self, to_email: str, verify_link: str) -> None:
+        logger.warning(
+            "DEV EMAIL SENDER — no real email provider configured. "
+            "Verification link for %s: %s",
+            to_email,
+            verify_link,
         )
 
 
@@ -70,6 +81,37 @@ class ResendEmailSender(EmailSender):
                       <p style="color: #6B7280; font-size: 13px;">
                         If you didn't request this, you can safely ignore this email —
                         your password won't change unless you click the link above.
+                      </p>
+                    </div>
+                """,
+            }
+        )
+
+    def send_verification(self, to_email: str, verify_link: str) -> None:
+        import resend
+
+        resend.api_key = settings.resend_api_key
+        resend.Emails.send(
+            {
+                "from": settings.reset_email_from,
+                "to": [to_email],
+                "subject": "Verify your Sanchay email",
+                "html": f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+                      <h2 style="color: #1C2541;">Verify your email</h2>
+                      <p>One click confirms this is really your email address —
+                         this link works once and expires in 24 hours.</p>
+                      <p style="margin: 28px 0;">
+                        <a href="{verify_link}"
+                           style="background: #1C2541; color: #fff; padding: 12px 24px;
+                                  border-radius: 8px; text-decoration: none; display: inline-block;">
+                          Verify email
+                        </a>
+                      </p>
+                      <p style="color: #6B7280; font-size: 13px;">
+                        Your account already works without this — verifying just
+                        confirms we can reach you, e.g. if you ever need to reset
+                        your password.
                       </p>
                     </div>
                 """,

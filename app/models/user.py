@@ -41,3 +41,9 @@ class User(Base):
     # login_events; this is just the fast path for the one number
     # people actually ask for.
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Soft verification, not a gate — an unverified account can sign
+    # in and use the app immediately. This just tracks whether the
+    # email address is confirmed real, so it can be surfaced as a
+    # nudge rather than blocking anything.
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

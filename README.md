@@ -84,6 +84,8 @@ checks worth knowing about:
 | GET | `/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
 | PUT | `/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
 | DELETE | `/auth/me` | Bearer token + password | Permanently deletes the account and all associated data (sync backup, login history, reset tokens) — immediate, no recovery |
+| POST | `/auth/verify-email` | None (token-based) | Marks the account verified. Soft verification — not required to sign in or use the app |
+| POST | `/auth/resend-verification` | Bearer token | Sends a fresh verification email (no-op if already verified) |
 | POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
 | POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 

@@ -20,7 +20,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 app.state.limiter = limiter

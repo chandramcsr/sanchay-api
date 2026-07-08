@@ -10,6 +10,7 @@ from app.core.limiter import limiter
 from app.core.reset_tokens import generate_reset_token, hash_reset_token
 from app.core.security import create_access_token, hash_password, verify_password
 from app.core.config import settings
+from app.models.email_verification_token import EmailVerificationToken
 from app.models.encrypted_ledger import EncryptedLedger
 from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
@@ -23,6 +24,7 @@ from app.schemas.auth import (
     SignupRequest,
     TokenResponse,
     UserOut,
+    VerifyEmailRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -45,6 +47,15 @@ def signup(request: Request, payload: SignupRequest, db: Session = Depends(get_d
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # Best-effort — verification is a soft nudge, not a gate. If this
+    # fails for any reason, signup still succeeds; the user can always
+    # request a fresh link later via /auth/resend-verification.
+    raw_token, token_hash = generate_reset_token()
+    db.add(EmailVerificationToken(user_id=user.id, token_hash=token_hash))
+    db.commit()
+    verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
+    email_sender.send_verification(user.email, verify_link)
 
     token = create_access_token(subject=user.id)
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
@@ -202,6 +213,61 @@ def delete_account(
 
     db.query(EncryptedLedger).filter(EncryptedLedger.user_id == current_user.id).delete()
     db.query(PasswordResetToken).filter(PasswordResetToken.user_id == current_user.id).delete()
+    db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == current_user.id).delete()
     db.query(LoginEvent).filter(LoginEvent.user_id == current_user.id).delete()
     db.delete(current_user)
     db.commit()
+
+
+@router.post("/verify-email", response_model=UserOut)
+def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)) -> User:
+    """
+    No authentication required — the token itself, proving control of
+    the email inbox, is the credential. Works whether or not the
+    visitor currently has a session on this device (e.g. verifying
+    from a different browser than the one they signed up in).
+    """
+    token_hash = hash_reset_token(payload.token)
+    verification = db.query(EmailVerificationToken).filter(EmailVerificationToken.token_hash == token_hash).first()
+
+    invalid_token_error = HTTPException(status.HTTP_400_BAD_REQUEST, detail="This verification link is invalid or has expired.")
+
+    if verification is None or verification.used_at is not None:
+        raise invalid_token_error
+
+    user = db.get(User, verification.user_id)
+    if user is None:
+        raise invalid_token_error
+
+    # Same SQLite-vs-Postgres timezone-naive gotcha as password reset
+    # tokens — see the identical comment there for why this is correct,
+    # not just a workaround.
+    expires_at = verification.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise invalid_token_error
+
+    user.is_verified = True
+    verification.used_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/resend-verification", status_code=status.HTTP_200_OK)
+@limiter.limit("3/hour")
+def resend_verification(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    if current_user.is_verified:
+        return {"message": "Your email is already verified."}
+
+    raw_token, token_hash = generate_reset_token()
+    db.add(EmailVerificationToken(user_id=current_user.id, token_hash=token_hash))
+    db.commit()
+    verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
+    email_sender.send_verification(current_user.email, verify_link)
+    return {"message": "Verification email sent."}

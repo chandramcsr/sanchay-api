@@ -118,3 +118,18 @@ def test_delete_is_rate_limited(client):
         client.request("DELETE", "/auth/me", headers=_auth(token), json={"password": "wrongpass1"})
     r = client.request("DELETE", "/auth/me", headers=_auth(token), json={"password": "wrongpass1"})
     assert r.status_code == 429
+
+
+def test_delete_removes_email_verification_tokens(client, db_session):
+    from app.core.reset_tokens import generate_reset_token
+    from app.models.email_verification_token import EmailVerificationToken
+
+    token = _signup(client)
+    user_id = db_session.query(User).filter_by(email="delete@example.com".lower()).first().id
+    # signup already created one verification token; add a second via resend
+    client.post("/auth/resend-verification", headers=_auth(token))
+
+    client.request("DELETE", "/auth/me", headers=_auth(token), json={"password": "hunter2222"})
+
+    remaining = db_session.query(EmailVerificationToken).filter_by(user_id=user_id).count()
+    assert remaining == 0
