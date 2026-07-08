@@ -29,7 +29,16 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_email_verification_tokens_token_hash'), 'email_verification_tokens', ['token_hash'], unique=True)
     op.create_index(op.f('ix_email_verification_tokens_user_id'), 'email_verification_tokens', ['user_id'], unique=False)
-    op.add_column('users', sa.Column('is_verified', sa.Boolean(), nullable=False))
+    # server_default=sa.text('false') is required, not cosmetic: this
+    # table already has real rows by the time this migration runs, and
+    # a NOT NULL column with no default has nothing to put in those
+    # existing rows — Postgres rejects the ALTER outright. SQLite
+    # (used for local dev/testing against a fresh, empty database)
+    # never surfaces this, which is exactly how this shipped broken
+    # the first time. The ORM-level default=False on the User model
+    # only applies to NEW rows inserted via SQLAlchemy; it does
+    # nothing for rows that already exist when this migration runs.
+    op.add_column('users', sa.Column('is_verified', sa.Boolean(), nullable=False, server_default=sa.text('false')))
     # ### end Alembic commands ###
 
 
