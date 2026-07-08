@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -57,6 +58,15 @@ class UserOut(BaseModel):
     id: str
     email: EmailStr
     display_name: str | None = None
+    last_login_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class LoginEventOut(BaseModel):
+    success: bool
+    ip_address: str | None = None
+    created_at: datetime
 
     model_config = {"from_attributes": True}
 

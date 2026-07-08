@@ -10,10 +10,12 @@ from app.core.limiter import limiter
 from app.core.reset_tokens import generate_reset_token, hash_reset_token
 from app.core.security import create_access_token, hash_password, verify_password
 from app.core.config import settings
+from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.schemas.auth import (
     ForgotPasswordRequest,
+    LoginEventOut,
     LoginRequest,
     ResetPasswordRequest,
     SignupRequest,
@@ -49,12 +51,28 @@ def signup(request: Request, payload: SignupRequest, db: Session = Depends(get_d
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    email = payload.email.lower()
+    user = db.query(User).filter(User.email == email).first()
     generic_error = HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
-    if user is None or not verify_password(payload.password, user.hashed_password):
-        raise generic_error
-    if not user.is_active:
+    success = user is not None and user.is_active and verify_password(payload.password, user.hashed_password)
+
+    # Logged before raising, so a failed attempt is recorded exactly
+    # like a successful one — the whole point is visibility into
+    # attempts that DIDN'T work (repeated failures against one email
+    # is the brute-force pattern this makes visible to a human, not
+    # just silently caught by rate limiting in the moment).
+    db.add(LoginEvent(
+        user_id=user.id if user else None,
+        email=email,
+        success=success,
+        ip_address=request.client.host if request.client else None,
+    ))
+    if success:
+        user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    if not success:
         raise generic_error
 
     token = create_access_token(subject=user.id)
@@ -130,3 +148,25 @@ def reset_password(request: Request, payload: ResetPasswordRequest, db: Session 
     # making them go through login again with the password they just set.
     token = create_access_token(subject=user.id)
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+
+
+@router.get("/login-history", response_model=list[LoginEventOut])
+def login_history(
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[LoginEvent]:
+    """
+    The current user's own recent login activity — the practical
+    "did someone try to sign into my account" view. Matched by email
+    rather than just user_id, so failed attempts against this email
+    before an account existed (or from a typo'd password that still
+    resolved to the right user) are visible too, not just successes.
+    """
+    return (
+        db.query(LoginEvent)
+        .filter(LoginEvent.email == current_user.email)
+        .order_by(LoginEvent.created_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    )

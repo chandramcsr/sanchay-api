@@ -78,7 +78,8 @@ checks worth knowing about:
 | GET | `/` | — | Service info, mainly for Render's uptime ping |
 | POST | `/auth/signup` | — | Create account, returns a JWT |
 | POST | `/auth/login` | — | Returns a JWT |
-| GET | `/auth/me` | Bearer token | Current user's profile |
+| GET | `/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
+| GET | `/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
 | POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
 | POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 

@@ -34,3 +34,10 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    # Convenience field — the last successful login, without a join to
+    # login_events for the common case of "when did I last sign in."
+    # The full history (including failed attempts) lives in
+    # login_events; this is just the fast path for the one number
+    # people actually ask for.
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
