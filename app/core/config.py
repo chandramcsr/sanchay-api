@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     cors_origins: str = "http://localhost:5173,https://chandramcsr.github.io"
+
+    # Email (password reset). Optional on purpose: if unset, the reset
+    # link is logged instead of emailed — keeps local dev/tests working
+    # with zero config, same pattern as everything else in this app
+    # that degrades gracefully rather than requiring every env var.
+    resend_api_key: str | None = None
+    reset_email_from: str = "Sanchay <onboarding@resend.dev>"  # resend.dev works without a verified domain
     frontend_url: str = "https://chandramcsr.github.io/ledger-app/"
     password_reset_token_expire_minutes: int = 30
 

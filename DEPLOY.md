@@ -17,6 +17,8 @@ somewhere to **run the container**. Some hosts bundle both; some don't.
    | `DATABASE_URL` | the Internal Database URL from step 1 |
    | `JWT_SECRET_KEY` | generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
    | `CORS_ORIGINS` | `https://chandramcsr.github.io,http://localhost:5173` |
+   | `RESEND_API_KEY` | from resend.com dashboard — enables real password-reset emails; omit to keep the dev fallback (logs the link instead) |
+   | `FRONTEND_URL` | `https://chandramcsr.github.io/ledger-app/` — where reset links point |
 
 4. Deploy. The Dockerfile's `CMD` runs `alembic upgrade head` before
    starting `uvicorn` — migrations apply automatically on every

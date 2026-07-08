@@ -9,3 +9,4 @@ python-multipart==0.0.20
 pydantic-settings==2.7.0
 email-validator==2.2.0
 slowapi==0.1.10
+resend==2.32.2

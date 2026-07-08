@@ -111,7 +111,7 @@ container start via `CMD` in the Dockerfile.
 - **Email verification** — signup is currently email+password only,
   no confirmation email. Fine for early testing; add before any real
   public signup.
-- **Password reset** — no "forgot password" flow yet.
+- ~~No password reset~~ — **fixed**: full forgot-password/reset-password flow (`app/routers/auth.py`), single-use SHA-256-hashed tokens with 30-minute expiry (`app/models/password_reset_token.py`), rate limited (3 requests/hour to request, 5/hour to reset), and real email delivery via Resend (`app/core/email.py`) once `RESEND_API_KEY` is set — falls back to logging the link when it isn't, so local dev/tests need zero config.
 - **Rate limiting** — login/signup endpoints have no throttling yet;
   add before this is internet-facing (e.g. slowapi or a reverse-proxy
   rule).
