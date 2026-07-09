@@ -1,36 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.limiter import limiter
-from app.models.encrypted_ledger import EncryptedLedger
 from app.models.user import User
 from app.schemas.sync import SyncPullResponse, SyncPushRequest, SyncStatusResponse
+from app.services import sync_service
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 @router.get("/status", response_model=SyncStatusResponse)
 async def sync_status(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SyncStatusResponse:
-    """
-    Cheap check before deciding whether to pull: does a backup exist
-    for this account, and what version is it at? Lets the client
-    compare against its own last-known version without downloading
-    the (potentially large) ciphertext just to find out nothing changed.
-    """
-    ledger = await db.get(EncryptedLedger, current_user.id)
-    if ledger is None:
-        return SyncStatusResponse(exists=False)
-    return SyncStatusResponse(exists=True, version=ledger.version, updated_at=ledger.updated_at.isoformat())
+    return await sync_service.get_status(db, current_user=current_user)
 
 
 @router.get("/pull", response_model=SyncPullResponse)
 async def sync_pull(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SyncPullResponse:
-    ledger = await db.get(EncryptedLedger, current_user.id)
-    if ledger is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No backup exists yet for this account.")
-    return SyncPullResponse(ciphertext=ledger.ciphertext, encryption_meta=ledger.encryption_meta, version=ledger.version)
+    return await sync_service.pull(db, current_user=current_user)
 
 
 @router.put("/push", response_model=SyncStatusResponse)
@@ -41,46 +29,10 @@ async def sync_push(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SyncStatusResponse:
-    """
-    Whole-blob replace with conflict detection — sync v1. The client
-    declares which version it's replacing (based_on_version); if that
-    doesn't match what's actually stored, the push is rejected with
-    409 rather than silently overwriting changes the client hasn't
-    seen yet. This is what prevents device A from clobbering device
-    B's newer edits — the client is expected to pull the latest and
-    reconcile (today: ask the user which copy to keep) before retrying.
-
-    What this does NOT do: merge the two versions automatically. A
-    real merge needs an operation log and field-level conflict
-    resolution — meaningfully more work, deliberately not attempted
-    here. This is "sync that can't silently lose data," not yet
-    "sync that never asks you to choose."
-    """
-    ledger = await db.get(EncryptedLedger, current_user.id)
-
-    if ledger is None:
-        if payload.based_on_version != 0:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail="No backup exists yet, but this push expected to replace an existing version.",
-            )
-        ledger = EncryptedLedger(
-            user_id=current_user.id,
-            ciphertext=payload.ciphertext,
-            encryption_meta=payload.encryption_meta,
-            version=1,
-        )
-        db.add(ledger)
-    else:
-        if payload.based_on_version != ledger.version:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                detail=f"Server has version {ledger.version}, which this push doesn't account for. Pull the latest first.",
-            )
-        ledger.ciphertext = payload.ciphertext
-        ledger.encryption_meta = payload.encryption_meta
-        ledger.version += 1
-
-    await db.commit()
-    await db.refresh(ledger)
-    return SyncStatusResponse(exists=True, version=ledger.version, updated_at=ledger.updated_at.isoformat())
+    return await sync_service.push(
+        db,
+        current_user=current_user,
+        ciphertext=payload.ciphertext,
+        encryption_meta=payload.encryption_meta,
+        based_on_version=payload.based_on_version,
+    )
