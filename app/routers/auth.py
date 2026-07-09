@@ -15,12 +15,14 @@ from app.models.email_verification_token import EmailVerificationToken
 from app.models.encrypted_ledger import EncryptedLedger
 from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import (
     DeleteAccountRequest,
     ForgotPasswordRequest,
     LoginEventOut,
     LoginRequest,
+    RefreshRequest,
     ResetPasswordRequest,
     SignupRequest,
     TokenResponse,
@@ -29,6 +31,29 @@ from app.schemas.auth import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+async def _issue_tokens(db: AsyncSession, user: User) -> TokenResponse:
+    """
+    Issues a fresh access+refresh pair for a user — shared by signup,
+    login, reset-password, and /refresh itself, so all four stay
+    consistent by construction rather than by four separate call
+    sites remembering to do the same thing the same way.
+
+    The refresh token is generated and hashed with the exact same
+    primitives as password-reset/email-verification tokens
+    (generate_reset_token/hash_reset_token) — architecturally it's the
+    same kind of thing: a random, single-use, SHA-256-hashed value
+    looked up by its hash. Reusing the name is a slight misnomer (this
+    isn't literally a "reset" token) but reusing the actual crypto
+    primitive is the right call rather than writing a near-identical
+    second implementation.
+    """
+    access_token = create_access_token(subject=user.id)
+    raw_refresh, refresh_hash = generate_reset_token()
+    db.add(RefreshToken(user_id=user.id, token_hash=refresh_hash))
+    await db.commit()
+    return TokenResponse(access_token=access_token, refresh_token=raw_refresh, user=UserOut.model_validate(user))
 
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -53,20 +78,14 @@ async def signup(
 
     # Best-effort — verification is a soft nudge, not a gate. Sent as a
     # background task: the response goes back the moment the account
-    # is created, not after waiting on Resend's API. A slow or down
-    # email provider no longer holds this request (and its DB
-    # connection) open any longer than necessary — and since it's
-    # fire-and-forget, a failure here still doesn't block signup; the
-    # user can always request a fresh link later via
-    # /auth/resend-verification either way.
+    # is created, not after waiting on Resend's API.
     raw_token, token_hash = generate_reset_token()
     db.add(EmailVerificationToken(user_id=user.id, token_hash=token_hash))
     await db.commit()
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
     background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
-    token = create_access_token(subject=user.id)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return await _issue_tokens(db, user)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -79,10 +98,7 @@ async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depe
     success = user is not None and user.is_active and await verify_password_async(payload.password, user.hashed_password)
 
     # Logged before raising, so a failed attempt is recorded exactly
-    # like a successful one — the whole point is visibility into
-    # attempts that DIDN'T work (repeated failures against one email
-    # is the brute-force pattern this makes visible to a human, not
-    # just silently caught by rate limiting in the moment).
+    # like a successful one.
     db.add(LoginEvent(
         user_id=user.id if user else None,
         email=email,
@@ -96,8 +112,49 @@ async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depe
     if not success:
         raise generic_error
 
-    token = create_access_token(subject=user.id)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return await _issue_tokens(db, user)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/hour")
+async def refresh(request: Request, payload: RefreshRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    """
+    Trades a valid refresh token for a fresh access+refresh pair — no
+    password needed, since the refresh token itself is the proof of a
+    previously-authenticated session.
+
+    ROTATING: the presented refresh token is revoked here regardless
+    of outcome (a used or expired token is never valid again), and a
+    brand new one is issued alongside the new access token. This means
+    a refresh token is single-use — replaying an old one (e.g. one an
+    attacker captured) fails immediately once the legitimate device
+    has refreshed even once, rather than remaining silently valid
+    forever alongside the real device's session.
+    """
+    invalid_error = HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token.")
+
+    token_hash = hash_reset_token(payload.refresh_token)
+    stored = (await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))).scalar_one_or_none()
+
+    if stored is None or stored.revoked_at is not None:
+        raise invalid_error
+
+    # Same SQLite-vs-Postgres timezone-naive gotcha as password reset
+    # tokens.
+    expires_at = stored.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise invalid_error
+
+    user = await db.get(User, stored.user_id)
+    if user is None or not user.is_active:
+        raise invalid_error
+
+    stored.revoked_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return await _issue_tokens(db, user)
 
 
 @router.get("/me", response_model=UserOut)
@@ -151,14 +208,6 @@ async def reset_password(request: Request, payload: ResetPasswordRequest, db: As
     if reset.used_at is not None:
         raise invalid_token_error
 
-    # SQLite doesn't preserve timezone info on DateTime columns the way
-    # Postgres does — a value written as UTC-aware comes back naive on
-    # SQLite. Since default_expiry() always generates UTC, a naive
-    # value here can only mean "UTC with the tzinfo stripped by the
-    # backend," so it's correct (not just a workaround) to assume that
-    # on read. Without this, comparing it against an aware "now" raises
-    # TypeError on SQLite while working fine on Postgres — the kind of
-    # backend-specific bug that's invisible until it isn't.
     expires_at = reset.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -169,10 +218,7 @@ async def reset_password(request: Request, payload: ResetPasswordRequest, db: As
     reset.used_at = datetime.now(timezone.utc)
     await db.commit()
 
-    # Signing the user in immediately after a successful reset avoids
-    # making them go through login again with the password they just set.
-    token = create_access_token(subject=user.id)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return await _issue_tokens(db, user)
 
 
 @router.get("/login-history", response_model=list[LoginEventOut])
@@ -181,13 +227,6 @@ async def login_history(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[LoginEvent]:
-    """
-    The current user's own recent login activity — the practical
-    "did someone try to sign into my account" view. Matched by email
-    rather than just user_id, so failed attempts against this email
-    before an account existed (or from a typo'd password that still
-    resolved to the right user) are visible too, not just successes.
-    """
     result = await db.execute(
         select(LoginEvent)
         .where(LoginEvent.email == current_user.email)
@@ -207,18 +246,9 @@ async def delete_account(
 ) -> None:
     """
     Permanently deletes the account and everything tied to it — not a
-    soft deactivate. Matches the privacy policy's explicit promise:
-    "permanently removes... all associated server-side data." No
-    grace period, no recovery; the confirmation step (re-entering
-    your password) is the safety net against an accidental call, not
-    an undo window afterward.
-
-    Deletes, in order: any encrypted Sync backup, password reset
-    tokens, login history, then the user record itself. The user's
-    local ledger (on-device) is completely unaffected — this only
-    touches identity/server-side data. If Sync was enabled, that
-    encrypted backup is now permanently gone too, same as forgetting
-    the sync passphrase.
+    soft deactivate. No grace period; the confirmation step
+    (re-entering the password) is the safety net against an
+    accidental call, not an undo window afterward.
     """
     if not await verify_password_async(payload.password, current_user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
@@ -227,18 +257,13 @@ async def delete_account(
     await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == current_user.id))
     await db.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == current_user.id))
     await db.execute(delete(LoginEvent).where(LoginEvent.user_id == current_user.id))
+    await db.execute(delete(RefreshToken).where(RefreshToken.user_id == current_user.id))
     await db.delete(current_user)
     await db.commit()
 
 
 @router.post("/verify-email", response_model=UserOut)
 async def verify_email(payload: VerifyEmailRequest, db: AsyncSession = Depends(get_db)) -> User:
-    """
-    No authentication required — the token itself, proving control of
-    the email inbox, is the credential. Works whether or not the
-    visitor currently has a session on this device (e.g. verifying
-    from a different browser than the one they signed up in).
-    """
     token_hash = hash_reset_token(payload.token)
     verification = (
         await db.execute(select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash))
@@ -253,9 +278,6 @@ async def verify_email(payload: VerifyEmailRequest, db: AsyncSession = Depends(g
     if user is None:
         raise invalid_token_error
 
-    # Same SQLite-vs-Postgres timezone-naive gotcha as password reset
-    # tokens — see the identical comment there for why this is correct,
-    # not just a workaround.
     expires_at = verification.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)

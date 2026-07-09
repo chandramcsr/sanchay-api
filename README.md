@@ -98,8 +98,9 @@ Business endpoints are versioned under `/api/v1`; ops endpoints (`/`, `/health`)
 |---|---|---|---|
 | GET | `/health` | — | Liveness check (real DB connectivity check, returns 503 on failure) |
 | GET | `/` | — | Service info, mainly for Render's uptime ping |
-| POST | `/api/v1/auth/signup` | — | Create account, returns a JWT |
-| POST | `/api/v1/auth/login` | — | Returns a JWT |
+| POST | `/api/v1/auth/signup` | — | Create account, returns a 12-hour access token + a 30-day refresh token |
+| POST | `/api/v1/auth/login` | — | Returns a 12-hour access token + a 30-day refresh token |
+| POST | `/api/v1/auth/refresh` | — (refresh token in body) | Trades a valid refresh token for a fresh access+refresh pair. Rotating: the presented token is revoked on use, so it can never be replayed |
 | GET | `/api/v1/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
 | GET | `/api/v1/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
 | GET | `/api/v1/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
