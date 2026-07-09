@@ -10,6 +10,7 @@ from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginEventOut,
     LoginRequest,
+    RefreshRequest,
     ResetPasswordRequest,
     SignupRequest,
     TokenResponse,
@@ -26,17 +27,24 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def signup(
     request: Request, payload: SignupRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
 ) -> TokenResponse:
-    token, user = await auth_service.signup(
+    access_token, refresh_token, user = await auth_service.signup(
         db, background_tasks, email=payload.email, password=payload.password, display_name=payload.display_name
     )
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
 
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    token, user = await auth_service.login(db, request, email=payload.email, password=payload.password)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    access_token, refresh_token, user = await auth_service.login(db, request, email=payload.email, password=payload.password)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
+
+
+@router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/hour")
+async def refresh(request: Request, payload: RefreshRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    access_token, refresh_token, user = await auth_service.refresh(db, refresh_token=payload.refresh_token)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
 
 
 @router.get("/me", response_model=UserOut)
@@ -59,8 +67,8 @@ async def forgot_password(
 @router.post("/reset-password", response_model=TokenResponse)
 @limiter.limit("5/hour")
 async def reset_password(request: Request, payload: ResetPasswordRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
-    token, user = await auth_service.reset_password(db, token=payload.token, new_password=payload.new_password)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    access_token, refresh_token, user = await auth_service.reset_password(db, token=payload.token, new_password=payload.new_password)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
 
 
 @router.get("/login-history", response_model=list[LoginEventOut])

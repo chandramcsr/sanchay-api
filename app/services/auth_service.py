@@ -31,14 +31,35 @@ from app.repositories import (
     email_verification_repository,
     login_event_repository,
     password_reset_repository,
+    refresh_token_repository,
     user_repository,
 )
 from app.repositories import encrypted_ledger_repository
 
 
+async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
+    """
+    Issues a fresh (access_token, refresh_token) pair — shared by
+    signup, login, reset_password, and refresh, so all four stay
+    consistent by construction. Commits, because the refresh token is
+    a new DB row that must persist to be redeemable later.
+
+    The refresh token reuses generate_reset_token/hash_reset_token:
+    architecturally a refresh token is the same kind of thing as a
+    password-reset token (random, single-use, SHA-256-hashed, looked
+    up by value), so it reuses the same primitive rather than a
+    near-identical second implementation.
+    """
+    access_token = create_access_token(subject=user.id)
+    raw_refresh, refresh_hash = generate_reset_token()
+    refresh_token_repository.create(db, user_id=user.id, token_hash=refresh_hash)
+    await db.commit()
+    return access_token, raw_refresh
+
+
 async def signup(
     db: AsyncSession, background_tasks: BackgroundTasks, *, email: str, password: str, display_name: str
-) -> tuple[str, User]:
+) -> tuple[str, str, User]:
     normalized_email = email.lower()
     if await user_repository.get_by_email(db, normalized_email):
         # Deliberately vague — confirming an email is NOT registered is
@@ -59,10 +80,11 @@ async def signup(
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
     background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
-    return create_access_token(subject=user.id), user
+    access_token, refresh_token = await _issue_token_pair(db, user)
+    return access_token, refresh_token, user
 
 
-async def login(db: AsyncSession, request: Request, *, email: str, password: str) -> tuple[str, User]:
+async def login(db: AsyncSession, request: Request, *, email: str, password: str) -> tuple[str, str, User]:
     normalized_email = email.lower()
     user = await user_repository.get_by_email(db, normalized_email)
     generic_error = HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
@@ -87,7 +109,8 @@ async def login(db: AsyncSession, request: Request, *, email: str, password: str
     if not success:
         raise generic_error
 
-    return create_access_token(subject=user.id), user
+    access_token, refresh_token = await _issue_token_pair(db, user)
+    return access_token, refresh_token, user
 
 
 async def forgot_password(db: AsyncSession, background_tasks: BackgroundTasks, *, email: str) -> None:
@@ -110,7 +133,7 @@ async def forgot_password(db: AsyncSession, background_tasks: BackgroundTasks, *
     background_tasks.add_task(email_sender.send_password_reset, user.email, reset_link)
 
 
-async def reset_password(db: AsyncSession, *, token: str, new_password: str) -> tuple[str, User]:
+async def reset_password(db: AsyncSession, *, token: str, new_password: str) -> tuple[str, str, User]:
     token_hash = hash_reset_token(token)
     reset = await password_reset_repository.get_by_token_hash(db, token_hash)
 
@@ -142,7 +165,46 @@ async def reset_password(db: AsyncSession, *, token: str, new_password: str) -> 
 
     # Signing the user in immediately after a successful reset avoids
     # making them go through login again with the password they just set.
-    return create_access_token(subject=user.id), user
+    access_token, refresh_token = await _issue_token_pair(db, user)
+    return access_token, refresh_token, user
+
+
+async def refresh(db: AsyncSession, *, refresh_token: str) -> tuple[str, str, User]:
+    """
+    Trades a valid refresh token for a fresh (access, refresh) pair —
+    no password, since the refresh token itself is proof of a
+    previously-authenticated session.
+
+    ROTATING: the presented token is revoked here on use, and a brand
+    new one issued alongside the new access token. A refresh token is
+    single-use — replaying an old one (e.g. one an attacker captured)
+    fails immediately once the legitimate device has refreshed even
+    once, rather than remaining silently valid forever.
+    """
+    invalid_error = HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token.")
+
+    token_hash = hash_reset_token(refresh_token)
+    stored = await refresh_token_repository.get_by_token_hash(db, token_hash)
+
+    if stored is None or stored.revoked_at is not None:
+        raise invalid_error
+
+    # Same SQLite-vs-Postgres timezone-naive gotcha as reset tokens.
+    expires_at = stored.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise invalid_error
+
+    user = await user_repository.get_by_id(db, stored.user_id)
+    if user is None or not user.is_active:
+        raise invalid_error
+
+    refresh_token_repository.revoke(stored)
+    await db.commit()
+
+    access_token, new_refresh = await _issue_token_pair(db, user)
+    return access_token, new_refresh, user
 
 
 async def get_login_history(db: AsyncSession, *, current_user: User, limit: int) -> list[LoginEvent]:
@@ -169,6 +231,7 @@ async def delete_account(db: AsyncSession, *, current_user: User, password: str)
     await password_reset_repository.delete_by_user_id(db, current_user.id)
     await email_verification_repository.delete_by_user_id(db, current_user.id)
     await login_event_repository.delete_by_user_id(db, current_user.id)
+    await refresh_token_repository.delete_by_user_id(db, current_user.id)
     await user_repository.delete(db, current_user)
     await db.commit()
 
