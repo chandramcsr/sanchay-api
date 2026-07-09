@@ -2,8 +2,7 @@ fastapi==0.139.0
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.51
 alembic==1.14.0
-bcrypt==5.0.0
-python-jose[cryptography]==3.3.0
+jwt-library @ git+https://github.com/chandramcsr/jwt-library.git@v0.1.0
 psycopg2-binary==2.9.10
 asyncpg==0.30.0
 aiosqlite==0.20.0

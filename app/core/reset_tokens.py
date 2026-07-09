@@ -1,14 +1,18 @@
-import hashlib
-import secrets
+"""
+Single-use token generation for password reset / email verification
+links, backed by jwt_library's token primitives — same reasoning as
+security.py: shared across services, wrapped here only to keep the
+exact function names/signatures every existing caller already uses.
+"""
 
-TOKEN_BYTES = 32  # 256 bits — matches JWT secret strength, not accidental
+from jwt_library import generate_token, hash_token
 
 
 def generate_reset_token() -> tuple[str, str]:
     """Returns (raw_token_for_the_link, hash_to_store_in_the_db)."""
-    raw = secrets.token_urlsafe(TOKEN_BYTES)
-    return raw, hash_reset_token(raw)
+    raw = generate_token()
+    return raw, hash_token(raw)
 
 
 def hash_reset_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hash_token(raw)

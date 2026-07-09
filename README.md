@@ -32,13 +32,17 @@ Sanchay's "no data collected" privacy story true as this grows.
   (`psycopg2-binary`) — migrations are one-shot scripts, not part of
   the request-serving hot path where async actually matters, so there's
   no reason to complicate them with the async driver too
-- **bcrypt** — password hashing (used directly, not via passlib —
-  see the comment in `app/core/security.py` for why). Genuinely
-  CPU-bound and blocking, so async routes never call it directly —
-  `hash_password_async`/`verify_password_async` run it via
-  `asyncio.to_thread`, which keeps the event loop free for every
-  other in-flight request while one request's hash is computing
-- **python-jose** — JWT signing/verification
+- **[jwt-library](https://github.com/chandramcsr/jwt-library)** —
+  JWT, password hashing (bcrypt, called directly rather than via
+  passlib — see that repo's docs for why), and single-use token
+  generation, extracted into a shared package once a second service
+  needing the same primitives was actually planned (not built
+  speculatively ahead of that need). `app/core/security.py` and
+  `app/core/reset_tokens.py` stay as thin, sanchay-api-specific
+  wrappers — they build the library's `JWTConfig` from this
+  service's own settings and re-export everything under the exact
+  names every existing caller already uses, so adopting the shared
+  library required zero changes anywhere else in this codebase
 - Password-reset and verification emails send via `BackgroundTasks` —
   the HTTP response returns the moment the database write succeeds,
   not after waiting on Resend's API latency
