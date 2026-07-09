@@ -14,14 +14,34 @@ Sanchay's "no data collected" privacy story true as this grows.
 
 ## Stack
 
-- **FastAPI** — async Python web framework
-- **PostgreSQL** — via SQLAlchemy 2.0 (SQLite is used only for local
-  tests, so the test suite runs without a database server)
+- **FastAPI** — genuinely async now, not just async-capable. Every route
+  is `async def`, and SQLAlchemy runs on its async engine (`asyncpg` for
+  Postgres, `aiosqlite` for tests) — a request waiting on the database
+  yields the event loop instead of blocking a worker thread, which is
+  the actual performance property FastAPI's "async" claim depends on
+- **PostgreSQL** — via SQLAlchemy 2.0's async engine. `DATABASE_URL` is
+  provided in the normal `postgresql://...` form (what Render gives
+  you); `Settings.async_database_url` translates it to the
+  `postgresql+asyncpg://` scheme the app actually connects with.
+  Connection pool hardened with `pool_pre_ping` (a connection Render's
+  Postgres silently dropped after sitting idle fails the *next*
+  request that draws it from the pool without this) and `pool_recycle`
+  (proactively discards connections before they go stale)
 - **Alembic** — schema migrations, versioned like the frontend's own
-  IndexedDB schema
+  IndexedDB schema. Runs on a separate, plain *sync* engine
+  (`psycopg2-binary`) — migrations are one-shot scripts, not part of
+  the request-serving hot path where async actually matters, so there's
+  no reason to complicate them with the async driver too
 - **bcrypt** — password hashing (used directly, not via passlib —
-  see the comment in `app/core/security.py` for why)
+  see the comment in `app/core/security.py` for why). Genuinely
+  CPU-bound and blocking, so async routes never call it directly —
+  `hash_password_async`/`verify_password_async` run it via
+  `asyncio.to_thread`, which keeps the event loop free for every
+  other in-flight request while one request's hash is computing
 - **python-jose** — JWT signing/verification
+- Password-reset and verification emails send via `BackgroundTasks` —
+  the HTTP response returns the moment the database write succeeds,
+  not after waiting on Resend's API latency
 
 ## Local development
 

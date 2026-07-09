@@ -1,15 +1,16 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.email import email_sender
 from app.core.limiter import limiter
 from app.core.reset_tokens import generate_reset_token, hash_reset_token
-from app.core.security import create_access_token, hash_password, verify_password
-from app.core.config import settings
+from app.core.security import create_access_token, hash_password_async, verify_password_async
 from app.models.email_verification_token import EmailVerificationToken
 from app.models.encrypted_ledger import EncryptedLedger
 from app.models.login_event import LoginEvent
@@ -32,8 +33,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
-def signup(request: Request, payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    existing = db.query(User).filter(User.email == payload.email.lower()).first()
+async def signup(
+    request: Request, payload: SignupRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
+) -> TokenResponse:
+    existing = (await db.execute(select(User).where(User.email == payload.email.lower()))).scalar_one_or_none()
     if existing:
         # Deliberately vague — confirming an email is NOT registered is
         # itself a data leak (account enumeration). Same message either way.
@@ -41,21 +44,26 @@ def signup(request: Request, payload: SignupRequest, db: Session = Depends(get_d
 
     user = User(
         email=payload.email.lower(),
-        hashed_password=hash_password(payload.password),
+        hashed_password=await hash_password_async(payload.password),
         display_name=payload.display_name,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
 
-    # Best-effort — verification is a soft nudge, not a gate. If this
-    # fails for any reason, signup still succeeds; the user can always
-    # request a fresh link later via /auth/resend-verification.
+    # Best-effort — verification is a soft nudge, not a gate. Sent as a
+    # background task: the response goes back the moment the account
+    # is created, not after waiting on Resend's API. A slow or down
+    # email provider no longer holds this request (and its DB
+    # connection) open any longer than necessary — and since it's
+    # fire-and-forget, a failure here still doesn't block signup; the
+    # user can always request a fresh link later via
+    # /auth/resend-verification either way.
     raw_token, token_hash = generate_reset_token()
     db.add(EmailVerificationToken(user_id=user.id, token_hash=token_hash))
-    db.commit()
+    await db.commit()
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
-    email_sender.send_verification(user.email, verify_link)
+    background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
     token = create_access_token(subject=user.id)
     return TokenResponse(access_token=token, user=UserOut.model_validate(user))
@@ -63,12 +71,12 @@ def signup(request: Request, payload: SignupRequest, db: Session = Depends(get_d
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
-def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+async def login(request: Request, payload: LoginRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     email = payload.email.lower()
-    user = db.query(User).filter(User.email == email).first()
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
     generic_error = HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
-    success = user is not None and user.is_active and verify_password(payload.password, user.hashed_password)
+    success = user is not None and user.is_active and await verify_password_async(payload.password, user.hashed_password)
 
     # Logged before raising, so a failed attempt is recorded exactly
     # like a successful one — the whole point is visibility into
@@ -83,7 +91,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
     ))
     if success:
         user.last_login_at = datetime.now(timezone.utc)
-    db.commit()
+    await db.commit()
 
     if not success:
         raise generic_error
@@ -93,13 +101,15 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 
 
 @router.get("/me", response_model=UserOut)
-def read_current_user(current_user: User = Depends(get_current_user)) -> UserOut:
+async def read_current_user(current_user: User = Depends(get_current_user)) -> UserOut:
     return UserOut.model_validate(current_user)
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
 @limiter.limit("3/hour")
-def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+async def forgot_password(
+    request: Request, payload: ForgotPasswordRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
     """
     Always returns the same generic response whether or not the email
     is registered — confirming an email's existence via this endpoint
@@ -107,33 +117,35 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
     """
     generic_response = {"message": "If that email is registered, a reset link has been sent."}
 
-    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    user = (await db.execute(select(User).where(User.email == payload.email.lower()))).scalar_one_or_none()
     if user is None:
         return generic_response
 
     raw_token, token_hash = generate_reset_token()
     reset = PasswordResetToken(user_id=user.id, token_hash=token_hash)
     db.add(reset)
-    db.commit()
+    await db.commit()
 
     reset_link = f"{settings.frontend_url.rstrip('/')}/?reset_token={raw_token}"
-    email_sender.send_password_reset(user.email, reset_link)
+    background_tasks.add_task(email_sender.send_password_reset, user.email, reset_link)
 
     return generic_response
 
 
 @router.post("/reset-password", response_model=TokenResponse)
 @limiter.limit("5/hour")
-def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)) -> TokenResponse:
+async def reset_password(request: Request, payload: ResetPasswordRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     token_hash = hash_reset_token(payload.token)
-    reset = db.query(PasswordResetToken).filter(PasswordResetToken.token_hash == token_hash).first()
+    reset = (
+        await db.execute(select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash))
+    ).scalar_one_or_none()
 
     invalid_token_error = HTTPException(status.HTTP_400_BAD_REQUEST, detail="This reset link is invalid or has expired.")
 
     if reset is None:
         raise invalid_token_error
 
-    user = db.get(User, reset.user_id)
+    user = await db.get(User, reset.user_id)
     if user is None or not user.is_active:
         raise invalid_token_error
     if reset.used_at is not None:
@@ -153,9 +165,9 @@ def reset_password(request: Request, payload: ResetPasswordRequest, db: Session 
     if expires_at < datetime.now(timezone.utc):
         raise invalid_token_error
 
-    user.hashed_password = hash_password(payload.new_password)
+    user.hashed_password = await hash_password_async(payload.new_password)
     reset.used_at = datetime.now(timezone.utc)
-    db.commit()
+    await db.commit()
 
     # Signing the user in immediately after a successful reset avoids
     # making them go through login again with the password they just set.
@@ -164,10 +176,10 @@ def reset_password(request: Request, payload: ResetPasswordRequest, db: Session 
 
 
 @router.get("/login-history", response_model=list[LoginEventOut])
-def login_history(
+async def login_history(
     limit: int = 20,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[LoginEvent]:
     """
     The current user's own recent login activity — the practical
@@ -176,22 +188,22 @@ def login_history(
     before an account existed (or from a typo'd password that still
     resolved to the right user) are visible too, not just successes.
     """
-    return (
-        db.query(LoginEvent)
-        .filter(LoginEvent.email == current_user.email)
+    result = await db.execute(
+        select(LoginEvent)
+        .where(LoginEvent.email == current_user.email)
         .order_by(LoginEvent.created_at.desc())
         .limit(min(limit, 100))
-        .all()
     )
+    return list(result.scalars().all())
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("3/hour")
-def delete_account(
+async def delete_account(
     request: Request,
     payload: DeleteAccountRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """
     Permanently deletes the account and everything tied to it — not a
@@ -208,19 +220,19 @@ def delete_account(
     encrypted backup is now permanently gone too, same as forgetting
     the sync passphrase.
     """
-    if not verify_password(payload.password, current_user.hashed_password):
+    if not await verify_password_async(payload.password, current_user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
 
-    db.query(EncryptedLedger).filter(EncryptedLedger.user_id == current_user.id).delete()
-    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == current_user.id).delete()
-    db.query(EmailVerificationToken).filter(EmailVerificationToken.user_id == current_user.id).delete()
-    db.query(LoginEvent).filter(LoginEvent.user_id == current_user.id).delete()
-    db.delete(current_user)
-    db.commit()
+    await db.execute(delete(EncryptedLedger).where(EncryptedLedger.user_id == current_user.id))
+    await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == current_user.id))
+    await db.execute(delete(EmailVerificationToken).where(EmailVerificationToken.user_id == current_user.id))
+    await db.execute(delete(LoginEvent).where(LoginEvent.user_id == current_user.id))
+    await db.delete(current_user)
+    await db.commit()
 
 
 @router.post("/verify-email", response_model=UserOut)
-def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)) -> User:
+async def verify_email(payload: VerifyEmailRequest, db: AsyncSession = Depends(get_db)) -> User:
     """
     No authentication required — the token itself, proving control of
     the email inbox, is the credential. Works whether or not the
@@ -228,14 +240,16 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)) -> 
     from a different browser than the one they signed up in).
     """
     token_hash = hash_reset_token(payload.token)
-    verification = db.query(EmailVerificationToken).filter(EmailVerificationToken.token_hash == token_hash).first()
+    verification = (
+        await db.execute(select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash))
+    ).scalar_one_or_none()
 
     invalid_token_error = HTTPException(status.HTTP_400_BAD_REQUEST, detail="This verification link is invalid or has expired.")
 
     if verification is None or verification.used_at is not None:
         raise invalid_token_error
 
-    user = db.get(User, verification.user_id)
+    user = await db.get(User, verification.user_id)
     if user is None:
         raise invalid_token_error
 
@@ -250,24 +264,25 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)) -> 
 
     user.is_verified = True
     verification.used_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
 @router.post("/resend-verification", status_code=status.HTTP_200_OK)
 @limiter.limit("3/hour")
-def resend_verification(
+async def resend_verification(
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
     if current_user.is_verified:
         return {"message": "Your email is already verified."}
 
     raw_token, token_hash = generate_reset_token()
     db.add(EmailVerificationToken(user_id=current_user.id, token_hash=token_hash))
-    db.commit()
+    await db.commit()
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
-    email_sender.send_verification(current_user.email, verify_link)
+    background_tasks.add_task(email_sender.send_verification, current_user.email, verify_link)
     return {"message": "Verification email sent."}

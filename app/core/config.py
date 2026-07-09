@@ -31,5 +31,23 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
+    @property
+    def async_database_url(self) -> str:
+        """
+        The async driver needs an explicit scheme (postgresql+asyncpg://,
+        sqlite+aiosqlite://) — Render's DATABASE_URL doesn't provide one
+        (and older Render/Heroku-style URLs use the legacy postgres://
+        scheme entirely). Translated here so the raw env var never needs
+        to change on the hosting side.
+        """
+        url = self.database_url
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        if url.startswith("postgresql://") and "+asyncpg" not in url:
+            return "postgresql+asyncpg://" + url[len("postgresql://") :]
+        if url.startswith("sqlite://") and "+aiosqlite" not in url:
+            return "sqlite+aiosqlite://" + url[len("sqlite://") :]
+        return url
+
 
 settings = Settings()

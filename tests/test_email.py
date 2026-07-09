@@ -9,7 +9,7 @@ import os
 from unittest.mock import patch
 
 
-def test_logging_sender_used_when_no_api_key_configured():
+async def test_logging_sender_used_when_no_api_key_configured():
     from app.core.email import LoggingEmailSender, email_sender
 
     # conftest.py never sets RESEND_API_KEY, so this is the real
@@ -17,7 +17,7 @@ def test_logging_sender_used_when_no_api_key_configured():
     assert isinstance(email_sender, LoggingEmailSender)
 
 
-def test_resend_sender_selected_when_api_key_is_configured():
+async def test_resend_sender_selected_when_api_key_is_configured():
     with patch.dict(os.environ, {"RESEND_API_KEY": "re_test_fake_key_not_real"}):
         import app.core.config as config_module
         import app.core.email as email_module
@@ -33,7 +33,7 @@ def test_resend_sender_selected_when_api_key_is_configured():
     importlib.reload(email_module)
 
 
-def test_resend_sender_calls_resend_api_with_correct_payload():
+async def test_resend_sender_calls_resend_api_with_correct_payload():
     from app.core.email import ResendEmailSender
 
     with patch("resend.Emails.send") as mock_send:
