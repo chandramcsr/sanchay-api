@@ -35,9 +35,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="0.7.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
+
+API_V1_PREFIX = "/api/v1"
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -57,8 +59,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router)
-app.include_router(sync.router)
+# Only the actual business API is versioned (/api/v1/auth/..., /api/v1/sync/...).
+# /, /health stay unversioned on purpose — they're ops endpoints (uptime
+# pings, load-balancer health checks), not part of the API surface a
+# client integrates against, and versioning them would just complicate
+# anything that pings them without buying anything real.
+app.include_router(auth.router, prefix=API_V1_PREFIX)
+app.include_router(sync.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")
@@ -69,7 +76,7 @@ def root() -> dict[str, str]:
     anyone who opens the bare URL in a browser sees something useful
     instead of "Not Found".
     """
-    return {"service": "sanchay-api", "status": "ok", "docs": "/docs"}
+    return {"service": "sanchay-api", "status": "ok", "docs": "/docs", "api": API_V1_PREFIX}
 
 
 @app.get("/health")

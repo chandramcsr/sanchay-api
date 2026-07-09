@@ -92,20 +92,22 @@ checks worth knowing about:
 
 ## API
 
+Business endpoints are versioned under `/api/v1`; ops endpoints (`/`, `/health`) deliberately aren't — they're not part of the API surface a client integrates against, and versioning an uptime ping buys nothing.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/health` | — | Liveness check |
+| GET | `/health` | — | Liveness check (real DB connectivity check, returns 503 on failure) |
 | GET | `/` | — | Service info, mainly for Render's uptime ping |
-| POST | `/auth/signup` | — | Create account, returns a JWT |
-| POST | `/auth/login` | — | Returns a JWT |
-| GET | `/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
-| GET | `/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
-| GET | `/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
-| GET | `/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
-| PUT | `/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
-| DELETE | `/auth/me` | Bearer token + password | Permanently deletes the account and all associated data (sync backup, login history, reset tokens) — immediate, no recovery |
-| POST | `/auth/verify-email` | None (token-based) | Marks the account verified. Soft verification — not required to sign in or use the app |
-| POST | `/auth/resend-verification` | Bearer token | Sends a fresh verification email (no-op if already verified) |
+| POST | `/api/v1/auth/signup` | — | Create account, returns a JWT |
+| POST | `/api/v1/auth/login` | — | Returns a JWT |
+| GET | `/api/v1/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
+| GET | `/api/v1/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
+| GET | `/api/v1/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
+| GET | `/api/v1/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
+| PUT | `/api/v1/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
+| DELETE | `/api/v1/auth/me` | Bearer token + password | Permanently deletes the account and all associated data (sync backup, login history, reset tokens) — immediate, no recovery |
+| POST | `/api/v1/auth/verify-email` | None (token-based) | Marks the account verified. Soft verification — not required to sign in or use the app |
+| POST | `/api/v1/auth/resend-verification` | Bearer token | Sends a fresh verification email (no-op if already verified) |
 | POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
 | POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
 

@@ -5,12 +5,12 @@ from tests.conftest import get_one
 
 
 async def _signup(client, email="reset@example.com", password="hunter2222"):
-    return await client.post("/auth/signup", json={"email": email, "password": password, "display_name": "Reset Test"})
+    return await client.post("/api/v1/auth/signup", json={"email": email, "password": password, "display_name": "Reset Test"})
 
 
 async def test_forgot_password_returns_generic_message_for_existing_user(client):
     await _signup(client)
-    r = await client.post("/auth/forgot-password", json={"email": "reset@example.com"})
+    r = await client.post("/api/v1/auth/forgot-password", json={"email": "reset@example.com"})
     assert r.status_code == 200
     assert "reset link" in r.json()["message"].lower()
 
@@ -18,14 +18,14 @@ async def test_forgot_password_returns_generic_message_for_existing_user(client)
 async def test_forgot_password_returns_identical_message_for_nonexistent_email(client):
     """Prevents account enumeration via the forgot-password endpoint too."""
     await _signup(client)
-    real = await client.post("/auth/forgot-password", json={"email": "reset@example.com"})
-    fake = await client.post("/auth/forgot-password", json={"email": "nobody-here@example.com"})
+    real = await client.post("/api/v1/auth/forgot-password", json={"email": "reset@example.com"})
+    fake = await client.post("/api/v1/auth/forgot-password", json={"email": "nobody-here@example.com"})
     assert real.status_code == fake.status_code == 200
     assert real.json() == fake.json()
 
 
 async def test_reset_password_with_invalid_token_is_rejected(client):
-    r = await client.post("/auth/reset-password", json={"token": "not-a-real-token", "new_password": "newpass123"})
+    r = await client.post("/api/v1/auth/reset-password", json={"token": "not-a-real-token", "new_password": "newpass123"})
     assert r.status_code == 400
 
 
@@ -38,14 +38,14 @@ async def test_full_reset_flow_changes_password(client, db_session):
     db_session.add(PasswordResetToken(user_id=user.id, token_hash=token_hash))
     await db_session.commit()
 
-    reset = await client.post("/auth/reset-password", json={"token": raw_token, "new_password": "brandnewpass123"})
+    reset = await client.post("/api/v1/auth/reset-password", json={"token": raw_token, "new_password": "brandnewpass123"})
     assert reset.status_code == 200
     assert "access_token" in reset.json()
 
     # Old password no longer works, new one does.
-    old = await client.post("/auth/login", json={"email": "reset@example.com", "password": "oldpass123"})
+    old = await client.post("/api/v1/auth/login", json={"email": "reset@example.com", "password": "oldpass123"})
     assert old.status_code == 401
-    new = await client.post("/auth/login", json={"email": "reset@example.com", "password": "brandnewpass123"})
+    new = await client.post("/api/v1/auth/login", json={"email": "reset@example.com", "password": "brandnewpass123"})
     assert new.status_code == 200
 
 
@@ -57,10 +57,10 @@ async def test_reset_token_is_single_use(client, db_session):
     db_session.add(PasswordResetToken(user_id=user.id, token_hash=token_hash))
     await db_session.commit()
 
-    first = await client.post("/auth/reset-password", json={"token": raw_token, "new_password": "firstnewpass1"})
+    first = await client.post("/api/v1/auth/reset-password", json={"token": raw_token, "new_password": "firstnewpass1"})
     assert first.status_code == 200
 
-    second = await client.post("/auth/reset-password", json={"token": raw_token, "new_password": "secondnewpass1"})
+    second = await client.post("/api/v1/auth/reset-password", json={"token": raw_token, "new_password": "secondnewpass1"})
     assert second.status_code == 400
 
 
@@ -79,7 +79,7 @@ async def test_expired_reset_token_is_rejected(client, db_session):
     db_session.add(expired)
     await db_session.commit()
 
-    r = await client.post("/auth/reset-password", json={"token": raw_token, "new_password": "newpassword1"})
+    r = await client.post("/api/v1/auth/reset-password", json={"token": raw_token, "new_password": "newpassword1"})
     assert r.status_code == 400
 
 
@@ -91,19 +91,19 @@ async def test_reset_password_rejects_weak_new_password(client, db_session):
     db_session.add(PasswordResetToken(user_id=user.id, token_hash=token_hash))
     await db_session.commit()
 
-    r = await client.post("/auth/reset-password", json={"token": raw_token, "new_password": "short"})
+    r = await client.post("/api/v1/auth/reset-password", json={"token": raw_token, "new_password": "short"})
     assert r.status_code == 422
 
 
 async def test_reset_token_hash_never_appears_in_forgot_password_response(client):
     """The raw token must only ever go out via the (currently logged) email — never in the HTTP response body."""
     await _signup(client)
-    r = await client.post("/auth/forgot-password", json={"email": "reset@example.com"})
+    r = await client.post("/api/v1/auth/forgot-password", json={"email": "reset@example.com"})
     assert "token" not in r.text.lower()
 
 
 async def test_forgot_password_is_rate_limited(client):
     for _ in range(3):
-        await client.post("/auth/forgot-password", json={"email": "ratelimited@example.com"})
-    r = await client.post("/auth/forgot-password", json={"email": "ratelimited@example.com"})
+        await client.post("/api/v1/auth/forgot-password", json={"email": "ratelimited@example.com"})
+    r = await client.post("/api/v1/auth/forgot-password", json={"email": "ratelimited@example.com"})
     assert r.status_code == 429
