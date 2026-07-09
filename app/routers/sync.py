@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
@@ -12,22 +12,22 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 @router.get("/status", response_model=SyncStatusResponse)
-def sync_status(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> SyncStatusResponse:
+async def sync_status(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SyncStatusResponse:
     """
     Cheap check before deciding whether to pull: does a backup exist
     for this account, and what version is it at? Lets the client
     compare against its own last-known version without downloading
     the (potentially large) ciphertext just to find out nothing changed.
     """
-    ledger = db.get(EncryptedLedger, current_user.id)
+    ledger = await db.get(EncryptedLedger, current_user.id)
     if ledger is None:
         return SyncStatusResponse(exists=False)
     return SyncStatusResponse(exists=True, version=ledger.version, updated_at=ledger.updated_at.isoformat())
 
 
 @router.get("/pull", response_model=SyncPullResponse)
-def sync_pull(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> SyncPullResponse:
-    ledger = db.get(EncryptedLedger, current_user.id)
+async def sync_pull(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> SyncPullResponse:
+    ledger = await db.get(EncryptedLedger, current_user.id)
     if ledger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No backup exists yet for this account.")
     return SyncPullResponse(ciphertext=ledger.ciphertext, encryption_meta=ledger.encryption_meta, version=ledger.version)
@@ -35,11 +35,11 @@ def sync_pull(current_user: User = Depends(get_current_user), db: Session = Depe
 
 @router.put("/push", response_model=SyncStatusResponse)
 @limiter.limit("30/minute")
-def sync_push(
+async def sync_push(
     request: Request,
     payload: SyncPushRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> SyncStatusResponse:
     """
     Whole-blob replace with conflict detection — sync v1. The client
@@ -56,7 +56,7 @@ def sync_push(
     here. This is "sync that can't silently lose data," not yet
     "sync that never asks you to choose."
     """
-    ledger = db.get(EncryptedLedger, current_user.id)
+    ledger = await db.get(EncryptedLedger, current_user.id)
 
     if ledger is None:
         if payload.based_on_version != 0:
@@ -81,6 +81,6 @@ def sync_push(
         ledger.encryption_meta = payload.encryption_meta
         ledger.version += 1
 
-    db.commit()
-    db.refresh(ledger)
+    await db.commit()
+    await db.refresh(ledger)
     return SyncStatusResponse(exists=True, version=ledger.version, updated_at=ledger.updated_at.isoformat())

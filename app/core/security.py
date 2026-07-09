@@ -8,6 +8,7 @@ bcrypt directly is fewer moving parts and avoids the landmine entirely.
 """
 
 from datetime import datetime, timedelta, timezone
+import asyncio
 
 import bcrypt
 from jose import JWTError, jwt
@@ -28,6 +29,22 @@ def verify_password(password: str, hashed: str) -> bool:
     except ValueError:
         # Malformed hash (shouldn't happen with our own data) — fail closed.
         return False
+
+
+async def hash_password_async(password: str) -> str:
+    """
+    bcrypt is deliberately slow (that's the point) and entirely
+    CPU-bound — calling it directly from an async route would freeze
+    the event loop for every other in-flight request for the duration
+    of the hash, not just the caller's own. asyncio.to_thread hands it
+    to a worker thread instead, so the event loop stays free to serve
+    everyone else while this one request waits.
+    """
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, hashed: str) -> bool:
+    return await asyncio.to_thread(verify_password, password, hashed)
 
 
 def create_access_token(subject: str, expires_minutes: int | None = None) -> str:

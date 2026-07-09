@@ -8,10 +8,14 @@ login request can't put a plaintext password into a response body,
 and from there into logs, error trackers, or a browser's network tab.
 """
 
+import logging
+
 from fastapi import Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("sanchay.errors")
 
 REDACTED = "[redacted]"
 SENSITIVE_FIELDS = {"password"}
@@ -45,3 +49,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         errors.append(err)
 
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=jsonable_encoder({"detail": errors}))
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    Catch-all for anything not already handled (a genuine bug, an
+    unexpected third-party failure, etc.). Two jobs, kept strictly
+    separate: log the REAL error, with a stack trace, server-side
+    where whoever's on call can actually see it — and return a
+    generic, safe message to the client, which never sees internals
+    (a file path, a raw exception message that might contain request
+    data, a stack trace) that could otherwise leak through an
+    unhandled-error response.
+    """
+    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An unexpected error occurred. Please try again."},
+    )
