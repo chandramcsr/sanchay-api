@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Security patches get their own PR immediately, not batched —
+      # everything else groups into one weekly PR so this doesn't
+      # become a constant stream of single-package bumps to review.
+      security-updates:
+        applies-to: "security-updates"
+      routine-updates:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
