@@ -12,6 +12,32 @@ building block toward multi-device sync (Phase 1d in the architecture
 doc), not the sync itself. Keeping that boundary explicit is what keeps
 Sanchay's "no data collected" privacy story true as this grows.
 
+## Architecture
+
+Three layers, each with one job:
+
+- **`routers/`** — HTTP only. Parse the request, call one service
+  function, return the result. Rate-limit decorators live here (they
+  need `request: Request` and hook in at the ASGI level, so they
+  can't move to the service layer even though everything else does).
+- **`services/`** — business logic. Enumeration protection, token
+  lifecycle, cascade-delete ordering, transaction boundaries
+  (`db.commit()` is called here, never in a repository — a service
+  often needs several repository calls to succeed together as one
+  unit of work).
+- **`repositories/`** — data access only. One file per model, no
+  business logic, no commits.
+
+Why: business logic that lives directly in route handlers can only be
+tested by spinning up the full HTTP stack (TestClient, a request, a
+response to parse). `tests/test_auth_service.py` calls
+`auth_service.signup()` etc. directly — plain Python function calls,
+no HTTP involved, meaningfully faster and a more precise way to test
+a business rule than asserting on a JSON response body for everything.
+The existing HTTP-level tests didn't go away — they prove the routes
+are *wired* correctly, which the service-layer tests alone can't; the
+two are complementary, not a replacement for each other.
+
 ## Stack
 
 - **FastAPI** — genuinely async now, not just async-capable. Every route
@@ -32,13 +58,17 @@ Sanchay's "no data collected" privacy story true as this grows.
   (`psycopg2-binary`) — migrations are one-shot scripts, not part of
   the request-serving hot path where async actually matters, so there's
   no reason to complicate them with the async driver too
-- **bcrypt** — password hashing (used directly, not via passlib —
-  see the comment in `app/core/security.py` for why). Genuinely
-  CPU-bound and blocking, so async routes never call it directly —
-  `hash_password_async`/`verify_password_async` run it via
-  `asyncio.to_thread`, which keeps the event loop free for every
-  other in-flight request while one request's hash is computing
-- **python-jose** — JWT signing/verification
+- **[jwt-library](https://github.com/chandramcsr/jwt-library)** —
+  JWT, password hashing (bcrypt, called directly rather than via
+  passlib — see that repo's docs for why), and single-use token
+  generation, extracted into a shared package once a second service
+  needing the same primitives was actually planned (not built
+  speculatively ahead of that need). `app/core/security.py` and
+  `app/core/reset_tokens.py` stay as thin, sanchay-api-specific
+  wrappers — they build the library's `JWTConfig` from this
+  service's own settings and re-export everything under the exact
+  names every existing caller already uses, so adopting the shared
+  library required zero changes anywhere else in this codebase
 - Password-reset and verification emails send via `BackgroundTasks` —
   the HTTP response returns the moment the database write succeeds,
   not after waiting on Resend's API latency
