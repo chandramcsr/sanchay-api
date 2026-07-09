@@ -17,12 +17,14 @@ from app.services import auth_service
 
 
 async def test_signup_service_creates_user_and_returns_token(db_session):
-    token, user = await auth_service.signup(
+    access_token, refresh_token, user = await auth_service.signup(
         db_session, BackgroundTasks(), email="direct@example.com", password="hunter2222", display_name="Direct Test"
     )
     assert user.email == "direct@example.com"
     assert user.display_name == "Direct Test"
-    assert token  # a real (unverified-here) JWT string
+    assert access_token  # a real access JWT
+    assert refresh_token  # a real refresh token
+    assert access_token != refresh_token
 
 
 async def test_signup_service_rejects_duplicate_email(db_session):
@@ -54,7 +56,7 @@ async def test_login_service_rejects_wrong_password(db_session):
 
 
 async def test_delete_account_service_requires_correct_password(db_session):
-    _, user = await auth_service.signup(
+    _, _, user = await auth_service.signup(
         db_session, BackgroundTasks(), email="deletesvc@example.com", password="hunter2222", display_name="Delete Svc"
     )
     try:
