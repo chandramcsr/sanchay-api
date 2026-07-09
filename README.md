@@ -12,6 +12,32 @@ building block toward multi-device sync (Phase 1d in the architecture
 doc), not the sync itself. Keeping that boundary explicit is what keeps
 Sanchay's "no data collected" privacy story true as this grows.
 
+## Architecture
+
+Three layers, each with one job:
+
+- **`routers/`** — HTTP only. Parse the request, call one service
+  function, return the result. Rate-limit decorators live here (they
+  need `request: Request` and hook in at the ASGI level, so they
+  can't move to the service layer even though everything else does).
+- **`services/`** — business logic. Enumeration protection, token
+  lifecycle, cascade-delete ordering, transaction boundaries
+  (`db.commit()` is called here, never in a repository — a service
+  often needs several repository calls to succeed together as one
+  unit of work).
+- **`repositories/`** — data access only. One file per model, no
+  business logic, no commits.
+
+Why: business logic that lives directly in route handlers can only be
+tested by spinning up the full HTTP stack (TestClient, a request, a
+response to parse). `tests/test_auth_service.py` calls
+`auth_service.signup()` etc. directly — plain Python function calls,
+no HTTP involved, meaningfully faster and a more precise way to test
+a business rule than asserting on a JSON response body for everything.
+The existing HTTP-level tests didn't go away — they prove the routes
+are *wired* correctly, which the service-layer tests alone can't; the
+two are complementary, not a replacement for each other.
+
 ## Stack
 
 - **FastAPI** — genuinely async now, not just async-capable. Every route
