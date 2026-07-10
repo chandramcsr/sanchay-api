@@ -147,6 +147,50 @@ async def add_group_member(
     return await _group_to_out(db, group)
 
 
+@router.delete("/groups/{group_id}/members/{user_id}", response_model=GroupOut)
+async def remove_group_member(
+    group_id: str, user_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> GroupOut:
+    """
+    Same rule group deletion already enforces, one person at a time:
+    removing someone who has real expense history in this group would
+    silently orphan a debt (their split would still exist and still
+    count toward balances, but they'd no longer even be listed as
+    part of the group). Anyone in the group can remove anyone else —
+    including themselves — as long as this check clears; there's no
+    special protection for the group's creator.
+    """
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    if await svc.member_has_expense_history(db, group_id=group_id, user_id=user_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Can't remove this person — they have shared expense history in this group.",
+        )
+    await svc.remove_member_from_group(db, group_id=group_id, user_id=user_id)
+    group = await svc.get_group(db, group_id=group_id)
+    if group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
+    return await _group_to_out(db, group)
+
+
+@router.delete("/groups/{group_id}/pending-invites", response_model=GroupOut)
+async def remove_pending_invite(
+    group_id: str, email: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> GroupOut:
+    """Same expense-history protection as remove_group_member, for someone who was never a real member — just an invite."""
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    if await svc.pending_invite_has_expense_history(db, group_id=group_id, email=email):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Can't remove this invite — they already have shared expense history in this group.",
+        )
+    await svc.remove_pending_invite(db, group_id=group_id, email=email)
+    group = await svc.get_group(db, group_id=group_id)
+    if group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
+    return await _group_to_out(db, group)
+
+
 @router.patch("/groups/{group_id}", response_model=GroupOut)
 async def rename_group(
     group_id: str, payload: GroupRenameRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)

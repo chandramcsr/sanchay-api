@@ -599,3 +599,76 @@ async def test_expense_needs_at_least_one_participant_across_either_list(client)
         json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-10", "participant_ids": [], "pending_participants": []},
     )
     assert r.status_code == 422
+
+
+# ---------- removing a member or a pending invite from a group ----------
+
+async def test_remove_a_member_with_no_expense_history(client):
+    alice_token, _ = await _signup(client, "alice-rm1@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-rm1@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": [{"email": "bob-rm1@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/members/{bob_id}", headers=_auth(alice_token))
+    assert r.status_code == 200
+    member_ids = [m["user_id"] for m in r.json()["members"]]
+    assert bob_id not in member_ids
+
+
+async def test_cannot_remove_a_member_with_real_expense_history(client):
+    alice_token, alice_id = await _signup(client, "alice-rm2@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-rm2@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": [{"email": "bob-rm2@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/members/{bob_id}", headers=_auth(alice_token))
+    assert r.status_code == 409
+
+    # Still a member afterward — the block actually blocked.
+    group_check = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    member_ids = [m["user_id"] for m in group_check.json()["members"]]
+    assert bob_id in member_ids
+
+
+async def test_remove_a_pending_invite_with_no_expense_history(client):
+    alice_token, _ = await _signup(client, "alice-rm3@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": [{"email": "sam-rm3@example.com", "name": "Sam"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/pending-invites", headers=_auth(alice_token), params={"email": "sam-rm3@example.com"})
+    assert r.status_code == 200
+    assert r.json()["pending_invites"] == []
+
+
+async def test_cannot_remove_a_pending_invite_with_real_expense_history(client):
+    alice_token, alice_id = await _signup(client, "alice-rm4@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": []})
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 40.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [{"email": "sam-rm4@example.com", "name": "Sam"}], "category": "Dining Out",
+        },
+    )
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/pending-invites", headers=_auth(alice_token), params={"email": "sam-rm4@example.com"})
+    assert r.status_code == 409
+
+    group_check = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert group_check.json()["pending_invites"] == [{"name": "Sam", "email": "sam-rm4@example.com"}]
+
+
+async def test_non_member_cannot_remove_anyone_from_a_group(client):
+    alice_token, _ = await _signup(client, "alice-rm5@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-rm5@example.com", "Stranger")
+    _, bob_id = await _signup(client, "bob-rm5@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "members": [{"email": "bob-rm5@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/members/{bob_id}", headers=_auth(stranger_token))
+    assert r.status_code == 404

@@ -118,6 +118,58 @@ async def add_member_to_group(db: AsyncSession, *, group_id: str, user_id: str) 
     await db.commit()
 
 
+async def member_has_expense_history(db: AsyncSession, *, group_id: str, user_id: str) -> bool:
+    result = await db.execute(
+        select(SharedExpenseSplit)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpense.group_id == group_id, SharedExpenseSplit.user_id == user_id)
+    )
+    if result.first() is not None:
+        return True
+    result = await db.execute(select(SharedExpense).where(SharedExpense.group_id == group_id, SharedExpense.paid_by == user_id))
+    return result.first() is not None
+
+
+async def remove_member_from_group(db: AsyncSession, *, group_id: str, user_id: str) -> None:
+    """
+    Same protection group deletion already has, applied to a single
+    person instead of the whole group: removing someone who has real
+    expense history in this group would silently orphan a debt (their
+    split would still exist, still count toward balances, but the
+    person it belongs to would no longer even be listed as part of
+    the group) — the caller must check member_has_expense_history()
+    first and refuse if it's true. This function only performs the
+    actual removal once that's been confirmed clear.
+    """
+    result = await db.execute(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == user_id))
+    member = result.scalar_one_or_none()
+    if member is not None:
+        await db.delete(member)
+        await db.commit()
+
+
+async def pending_invite_has_expense_history(db: AsyncSession, *, group_id: str, email: str) -> bool:
+    ref = email_reference(email)
+    result = await db.execute(
+        select(SharedExpenseSplit)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpense.group_id == group_id, SharedExpenseSplit.email_ref == ref, SharedExpenseSplit.user_id.is_(None))
+    )
+    return result.first() is not None
+
+
+async def remove_pending_invite(db: AsyncSession, *, group_id: str, email: str) -> None:
+    """Same expense-history protection as remove_member_from_group — caller checks pending_invite_has_expense_history() first."""
+    normalized = email.strip().lower()
+    result = await db.execute(
+        select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id, PendingGroupInvite.email == normalized)
+    )
+    invite = result.scalar_one_or_none()
+    if invite is not None:
+        await db.delete(invite)
+        await db.commit()
+
+
 async def create_group(db: AsyncSession, *, name: str, created_by: str, member_ids: list[str]) -> Group:
     group = Group(name=name, created_by=created_by)
     db.add(group)
