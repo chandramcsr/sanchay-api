@@ -40,12 +40,38 @@ class Settings(BaseSettings):
         (and older Render/Heroku-style URLs use the legacy postgres://
         scheme entirely). Translated here so the raw env var never needs
         to change on the hosting side.
+
+        Also translates libpq-style ?sslmode=... (which Neon, Supabase,
+        and most hosted-Postgres connection strings include) into
+        asyncpg's ?ssl=... — asyncpg does not accept sslmode as a
+        keyword AT ALL and crashes with "connect() got an unexpected
+        keyword argument 'sslmode'" if it's left in. psycopg2 (the sync
+        engine Alembic migrations run on) understands sslmode natively,
+        which is why migrations succeed and then the app crashes on the
+        very same URL — the two drivers genuinely speak different query
+        parameters. Only the async URL is rewritten; the sync engine
+        keeps the original untouched.
         """
         url = self.database_url
         if url.startswith("postgres://"):
             url = "postgresql://" + url[len("postgres://") :]
         if url.startswith("postgresql://") and "+asyncpg" not in url:
-            return "postgresql+asyncpg://" + url[len("postgresql://") :]
+            url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+            # libpq -> asyncpg SSL param translation. libpq's modes
+            # (disable/allow/prefer/require/verify-ca/verify-full) map
+            # onto asyncpg's ssl= values; require/verify-* all become
+            # ssl=require here — asyncpg's "require" performs
+            # certificate verification against the system CA bundle by
+            # default when given a hostname, so this doesn't silently
+            # weaken verify-full into an unverified connection.
+            for mode in ("verify-full", "verify-ca", "require", "prefer", "allow"):
+                if f"sslmode={mode}" in url:
+                    replacement = "ssl=require" if mode in ("require", "verify-ca", "verify-full") else "ssl=prefer"
+                    url = url.replace(f"sslmode={mode}", replacement)
+                    break
+            if "sslmode=disable" in url:
+                url = url.replace("sslmode=disable", "ssl=disable")
+            return url
         if url.startswith("sqlite://") and "+aiosqlite" not in url:
             return "sqlite+aiosqlite://" + url[len("sqlite://") :]
         return url
