@@ -38,6 +38,37 @@ The existing HTTP-level tests didn't go away — they prove the routes
 are *wired* correctly, which the service-layer tests alone can't; the
 two are complementary, not a replacement for each other.
 
+### The shared-expenses module is deliberately isolated
+
+`Group`, `GroupMember`, `SharedExpense`, `SharedExpenseSplit`,
+`SharedExpenseComment`, `Settlement` (in `app/models/`) and
+`app/services/shared_expense_service.py` form a genuinely separate
+domain, built to be extractable into its own service later without a
+rewrite. The only thing this module depends on elsewhere in the
+codebase is `users.id` — no foreign keys or joins into
+`encrypted_ledgers`, `login_events`, or anything ledger-specific. The
+only thing elsewhere in the codebase depends on it back is one
+function call: `auth_service.delete_account()` calls
+`freeze_user_references()` before deleting a user row.
+
+**Why nullable `user_id`, no enforced foreign key, everywhere in this
+module**: account deletion in this app is permanent and cascades
+everything — except a real, bilateral debt between two people doesn't
+stop existing just because one side deleted their account. Every
+group/expense/split/comment/settlement row stores a `name_snapshot`
+alongside a *nullable* `user_id`. `freeze_user_references()` copies
+the current display name into every row referencing that user, then
+sets `user_id` to `NULL` — the historical record survives as "Name
+(account deleted)"; the account and everything else about that person
+does not. A real foreign-key constraint here would have either
+blocked deletion outright or cascade-deleted the history, matching
+neither the intended policy.
+
+**Splitting math** (`split_evenly()`) uses `Decimal` throughout, never
+float, and the largest-remainder method — $100 split 3 ways is
+$33.33/$33.33/$33.34, deterministic, always summing exactly to the
+total.
+
 ## Stack
 
 - **FastAPI** — genuinely async now, not just async-capable. Every route

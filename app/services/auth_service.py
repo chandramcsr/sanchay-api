@@ -35,6 +35,7 @@ from app.repositories import (
     user_repository,
 )
 from app.repositories import encrypted_ledger_repository
+from app.services.shared_expense_service import freeze_user_references
 
 
 async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
@@ -223,9 +224,22 @@ async def delete_account(db: AsyncSession, *, current_user: User, password: str)
     No grace period; the confirmation step (re-entering the password)
     is the safety net against an accidental call, not an undo window
     afterward.
+
+    ONE exception to "everything tied to it is deleted": shared
+    expenses with other people. freeze_user_references() is the
+    single, narrow integration point this function has with the
+    shared-expenses module — it snapshots this user's display name
+    onto every group/expense/split they're part of and nulls the
+    user_id reference, so a real bilateral debt survives as history
+    ("Name (account deleted)") even though this account, and
+    everything else about it, is genuinely gone. Called BEFORE the
+    user row is deleted, since the snapshot needs the still-live
+    display_name to copy from.
     """
     if not await verify_password_async(password, current_user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
+
+    await freeze_user_references(db, user_id=current_user.id)
 
     await encrypted_ledger_repository.delete_by_user_id(db, current_user.id)
     await password_reset_repository.delete_by_user_id(db, current_user.id)
