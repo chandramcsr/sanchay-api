@@ -91,6 +91,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: UserOut
     reconnected_history: ReconnectedHistory | None = None  # only ever populated by signup
+    joined_groups: list[str] = []  # names of groups joined via pending invites — only ever populated by signup
 
 
 class RefreshRequest(BaseModel):

@@ -34,6 +34,12 @@ class SharedExpense(Base):
     paid_by_email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     paid_by_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
+    # server_default, not just a Python-level default — this table may
+    # already have rows once real usage exists by the time this
+    # migrates, and a NOT NULL column with no server_default on a
+    # non-empty table is exactly the migration class that broke a live
+    # deploy once before in this project. Not repeating that.
+    category: Mapped[str] = mapped_column(String(50), nullable=False, server_default="Other")
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     expense_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)

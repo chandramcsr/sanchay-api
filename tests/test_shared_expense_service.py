@@ -224,7 +224,7 @@ async def test_signing_up_again_with_the_same_email_reconnects_frozen_history(db
     assert result.scalar_one().user_id is None
 
     # Bob signs up again with the SAME email.
-    _, _, new_bob, reconnect_summary = await auth_service.signup(
+    _, _, new_bob, reconnect_summary, _joined = await auth_service.signup(
         db_session, BackgroundTasks(), email=bob_email, password="newpassword1", display_name="Bob"
     )
 
@@ -253,7 +253,7 @@ async def test_signing_up_with_a_different_email_reconnects_nothing(db_session):
     await auth_service.delete_account(db_session, current_user=bob, password="hunter2222")
 
     # A completely unrelated signup must not pick up Bob's frozen history.
-    _, _, _stranger, reconnect_summary = await auth_service.signup(
+    _, _, _stranger, reconnect_summary, _joined = await auth_service.signup(
         db_session, BackgroundTasks(), email="totally-unrelated@example.com", password="hunter2222", display_name="Stranger"
     )
     assert reconnect_summary["groups_reconnected"] == 0
@@ -264,7 +264,7 @@ async def test_a_brand_new_signup_with_no_prior_history_reconnects_nothing(db_se
     from app.services import auth_service
     from fastapi import BackgroundTasks
 
-    _, _, _user, reconnect_summary = await auth_service.signup(
+    _, _, _user, reconnect_summary, _joined = await auth_service.signup(
         db_session, BackgroundTasks(), email="brand-new-11@example.com", password="hunter2222", display_name="New"
     )
     assert reconnect_summary["groups_reconnected"] == 0

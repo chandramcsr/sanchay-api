@@ -35,7 +35,7 @@ from app.repositories import (
     user_repository,
 )
 from app.repositories import encrypted_ledger_repository
-from app.services.shared_expense_service import freeze_user_references, reconnect_by_email
+from app.services.shared_expense_service import freeze_user_references, join_pending_invites, reconnect_by_email
 
 
 async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
@@ -60,7 +60,7 @@ async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
 
 async def signup(
     db: AsyncSession, background_tasks: BackgroundTasks, *, email: str, password: str, display_name: str
-) -> tuple[str, str, User, dict]:
+) -> tuple[str, str, User, dict, list[str]]:
     normalized_email = email.lower()
     if await user_repository.get_by_email(db, normalized_email):
         # Deliberately vague — confirming an email is NOT registered is
@@ -78,6 +78,11 @@ async def signup(
     # full email_ref/freeze/reconnect design.
     reconnect_summary = await reconnect_by_email(db, new_user=user)
 
+    # Same integration-point pattern, right next to it: if someone
+    # added this email to a group before this person had an account,
+    # join those groups now.
+    joined_groups = await join_pending_invites(db, new_user=user)
+
     # Best-effort — verification is a soft nudge, not a gate. Sent as a
     # background task so the response returns the moment the account
     # exists, not after waiting on Resend's API.
@@ -88,7 +93,7 @@ async def signup(
     background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
     access_token, refresh_token = await _issue_token_pair(db, user)
-    return access_token, refresh_token, user, reconnect_summary
+    return access_token, refresh_token, user, reconnect_summary, joined_groups
 
 
 async def login(db: AsyncSession, request: Request, *, email: str, password: str) -> tuple[str, str, User]:

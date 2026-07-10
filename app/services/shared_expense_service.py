@@ -43,8 +43,10 @@ from jwt_library import hash_token
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.email import email_sender
 from app.models.group import Group
 from app.models.group_member import GroupMember
+from app.models.pending_group_invite import PendingGroupInvite
 from app.models.settlement import Settlement
 from app.models.shared_expense import SharedExpense
 from app.models.shared_expense_comment import SharedExpenseComment
@@ -121,6 +123,7 @@ async def create_shared_expense(
     amount: Decimal,
     expense_date: str,
     participant_ids: list[str],
+    category: str = "Other",
 ) -> SharedExpense:
     payer = await db.get(User, paid_by)
     expense = SharedExpense(
@@ -129,6 +132,7 @@ async def create_shared_expense(
         paid_by_email_ref=email_reference(payer.email) if payer else "",
         paid_by_name_snapshot=payer.display_name if payer else "Unknown",
         description=description,
+        category=category,
         amount=amount,
         expense_date=expense_date,
     )
@@ -158,6 +162,7 @@ async def edit_shared_expense(
     edited_by: str,
     new_amount: Decimal | None = None,
     new_description: str | None = None,
+    new_category: str | None = None,
 ) -> SharedExpense:
     """
     Corrects the ONE shared record and re-splits it — not a private
@@ -188,6 +193,10 @@ async def edit_shared_expense(
     if new_description is not None and new_description != expense.description:
         changes.append(f'description to "{new_description}"')
         expense.description = new_description
+
+    if new_category is not None and new_category != expense.category:
+        changes.append(f'category to "{new_category}"')
+        expense.category = new_category
 
     if changes:
         db.add(SharedExpenseComment(
@@ -407,6 +416,11 @@ async def get_group_members(db: AsyncSession, *, group_id: str) -> list[GroupMem
     return list(result.scalars().all())
 
 
+async def get_group_pending_invites(db: AsyncSession, *, group_id: str) -> list[str]:
+    result = await db.execute(select(PendingGroupInvite.email).where(PendingGroupInvite.group_id == group_id))
+    return [row[0] for row in result.all()]
+
+
 async def get_group_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:
     result = await db.execute(
         select(SharedExpense).where(SharedExpense.group_id == group_id).order_by(SharedExpense.expense_date.desc())
@@ -461,3 +475,58 @@ async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
             balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance})
 
     return balances
+
+
+# ---------- pending invites: adding someone who has no account yet ----------
+
+async def create_pending_invite(db: AsyncSession, *, group_id: str, email: str, invited_by: str, group_name: str, frontend_url: str) -> None:
+    """
+    Creates the pending row AND sends the invite email in one step —
+    a pending invite with no email sent would be a silent dead end
+    for the invitee, who'd never know to sign up. Called from the
+    group-creation router path when an email has no matching account.
+    """
+    normalized = email.strip().lower()
+    inviter = await db.get(User, invited_by)
+    db.add(PendingGroupInvite(group_id=group_id, email=normalized, invited_by=invited_by))
+    await db.commit()
+
+    signup_link = frontend_url.rstrip("/") + "/"  # signup is the app's normal entry point, no special invite token needed — matching by email is what makes this work
+    email_sender.send_group_invite(
+        normalized, inviter.display_name if inviter else "Someone", group_name, signup_link
+    )
+
+
+async def join_pending_invites(db: AsyncSession, *, new_user: User) -> list[str]:
+    """
+    Called from auth_service.signup() right after a new user is
+    created — same integration-point pattern as reconnect_by_email(),
+    right next to it. Finds every pending invite matching this
+    signup's email, creates a real GroupMember row for each, and
+    deletes the consumed invite. Returns the group NAMES joined, so
+    signup can surface a "you were added to these groups" notice —
+    visible, not silent, same principle as the reconnection summary.
+    """
+    email = new_user.email.strip().lower()
+    result = await db.execute(select(PendingGroupInvite).where(PendingGroupInvite.email == email))
+    invites = list(result.scalars().all())
+    if not invites:
+        return []
+
+    joined_group_names = []
+    for invite in invites:
+        group = await db.get(Group, invite.group_id)
+        if group is None:
+            await db.delete(invite)
+            continue
+        db.add(GroupMember(
+            group_id=invite.group_id,
+            user_id=new_user.id,
+            email_ref=email_reference(new_user.email),
+            name_snapshot=new_user.display_name,
+        ))
+        joined_group_names.append(group.name)
+        await db.delete(invite)
+
+    await db.commit()
+    return joined_group_names

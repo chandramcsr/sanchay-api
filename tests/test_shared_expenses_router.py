@@ -11,10 +11,15 @@ def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-async def test_create_group_requires_existing_accounts_for_all_members(client):
+async def test_create_group_with_unknown_email_pends_an_invite_instead_of_failing(client):
+    # This test previously asserted a 400 for unknown emails — that
+    # was v1's deliberate scope limit, and it was deliberately CHANGED
+    # (backlog item #5, confirmed): unknown emails now become pending
+    # invites (with an invite email sent) rather than errors.
     token, _ = await _signup(client, "alice-ge1@example.com", "Alice")
     r = await client.post("/api/v1/shared-expenses/groups", headers=_auth(token), json={"name": "Roommates", "member_emails": ["nobody-here@example.com"]})
-    assert r.status_code == 400
+    assert r.status_code == 201
+    assert r.json()["pending_invites"] == ["nobody-here@example.com"]
 
 
 async def test_create_group_succeeds_with_real_members(client):
@@ -222,3 +227,101 @@ async def test_balances_with_zero_net_dont_clutter_the_list(client):
     # (Not a clean zero on purpose -- just confirming the list still returns sensibly with mixed activity.)
     r = await client.get("/api/v1/shared-expenses/balances", headers=_auth(alice_token))
     assert r.status_code == 200
+
+async def test_expense_category_defaults_to_other_and_can_be_set_explicitly(client):
+    alice_token, alice_id = await _signup(client, "alice-cat1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    default_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-08", "participant_ids": [alice_id]},
+    )
+    assert default_resp.json()["category"] == "Other"
+
+    explicit_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-08", "participant_ids": [alice_id], "category": "Dining Out"},
+    )
+    assert explicit_resp.json()["category"] == "Dining Out"
+
+
+async def test_editing_category_is_logged_in_the_comment_history(client):
+    alice_token, alice_id = await _signup(client, "alice-cat2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "member_emails": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Groceries", "amount": 40.00, "expense_date": "2026-07-08", "participant_ids": [alice_id], "category": "Groceries"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"category": "Dining Out"})
+    assert r.json()["category"] == "Dining Out"
+
+    comments = await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}/comments", headers=_auth(alice_token))
+    assert "Dining Out" in comments.json()[0]["body"]
+
+
+# ---------- pending invites: adding someone with no account yet ----------
+
+async def test_inviting_an_unknown_email_creates_a_pending_invite_not_an_error(client):
+    alice_token, _ = await _signup(client, "alice-inv1@example.com", "Alice")
+    r = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Future Roommates", "member_emails": ["not-yet-signed-up-inv1@example.com"]},
+    )
+    assert r.status_code == 201  # no longer a 400
+    body = r.json()
+    assert body["pending_invites"] == ["not-yet-signed-up-inv1@example.com"]
+    member_ids = [m["user_id"] for m in body["members"]]
+    assert len(member_ids) == 1  # just Alice so far — the invitee isn't a member YET
+
+
+async def test_signing_up_with_an_invited_email_joins_the_group_automatically(client):
+    alice_token, _ = await _signup(client, "alice-inv2@example.com", "Alice")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip Group", "member_emails": ["carol-inv2@example.com"]},
+    )
+    group_id = group_resp.json()["id"]
+
+    # Carol signs up with the exact email that was invited.
+    signup_resp = await client.post(
+        "/api/v1/auth/signup",
+        json={"email": "carol-inv2@example.com", "password": "hunter2222", "display_name": "Carol"},
+    )
+    assert signup_resp.status_code == 201
+    body = signup_resp.json()
+    assert body["joined_groups"] == ["Trip Group"]  # visible in the signup response, not silent
+
+    # And she's genuinely a member now — she can see the group.
+    carol_token = body["access_token"]
+    group_check = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(carol_token))
+    assert group_check.status_code == 200
+    member_names = [m["name"] for m in group_check.json()["members"]]
+    assert "Carol" in member_names
+
+    # The pending invite is consumed — no longer listed.
+    assert group_check.json()["pending_invites"] == []
+
+
+async def test_signup_with_no_pending_invites_has_empty_joined_groups(client):
+    r = await client.post(
+        "/api/v1/auth/signup",
+        json={"email": "nobody-invited-inv3@example.com", "password": "hunter2222", "display_name": "Plain"},
+    )
+    assert r.json()["joined_groups"] == []
+
+
+async def test_invited_email_is_matched_case_insensitively(client):
+    alice_token, _ = await _signup(client, "alice-inv4@example.com", "Alice")
+    await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Case Group", "member_emails": ["MixedCase-Inv4@Example.com"]},
+    )
+    signup_resp = await client.post(
+        "/api/v1/auth/signup",
+        json={"email": "mixedcase-inv4@example.com", "password": "hunter2222", "display_name": "Mixed"},
+    )
+    assert signup_resp.json()["joined_groups"] == ["Case Group"]

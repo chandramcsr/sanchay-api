@@ -23,6 +23,9 @@ class EmailSender(ABC):
     @abstractmethod
     def send_verification(self, to_email: str, verify_link: str) -> None: ...
 
+    @abstractmethod
+    def send_group_invite(self, to_email: str, inviter_name: str, group_name: str, signup_link: str) -> None: ...
+
 
 class LoggingEmailSender(EmailSender):
     """
@@ -46,6 +49,16 @@ class LoggingEmailSender(EmailSender):
             "Verification link for %s: %s",
             to_email,
             verify_link,
+        )
+
+    def send_group_invite(self, to_email: str, inviter_name: str, group_name: str, signup_link: str) -> None:
+        logger.warning(
+            "DEV EMAIL SENDER — no real email provider configured. "
+            "%s invited %s to '%s': %s",
+            inviter_name,
+            to_email,
+            group_name,
+            signup_link,
         )
 
 
@@ -112,6 +125,37 @@ class ResendEmailSender(EmailSender):
                         Your account already works without this — verifying just
                         confirms we can reach you, e.g. if you ever need to reset
                         your password.
+                      </p>
+                    </div>
+                """,
+            }
+        )
+
+
+    def send_group_invite(self, to_email: str, inviter_name: str, group_name: str, signup_link: str) -> None:
+        import resend
+
+        resend.api_key = settings.resend_api_key
+        resend.Emails.send(
+            {
+                "from": settings.reset_email_from,
+                "to": [to_email],
+                "subject": f"{inviter_name} added you to \"{group_name}\" on Sanchay",
+                "html": f"""
+                    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
+                      <h2 style="color: #1C2541;">You've been added to a group</h2>
+                      <p>{inviter_name} added you to <strong>{group_name}</strong> on Sanchay,
+                         to split shared expenses. Create a free account with this email
+                         address and you'll join the group automatically.</p>
+                      <p style="margin: 28px 0;">
+                        <a href="{signup_link}"
+                           style="background: #1C2541; color: #fff; padding: 12px 24px;
+                                  border-radius: 8px; text-decoration: none; display: inline-block;">
+                          Create your account
+                        </a>
+                      </p>
+                      <p style="color: #6B7280; font-size: 13px;">
+                        If you weren't expecting this, you can safely ignore this email.
                       </p>
                     </div>
                 """,

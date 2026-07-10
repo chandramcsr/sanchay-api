@@ -17,7 +17,7 @@ from app.services import auth_service
 
 
 async def test_signup_service_creates_user_and_returns_token(db_session):
-    access_token, refresh_token, user, _reconnect = await auth_service.signup(
+    access_token, refresh_token, user, _reconnect, _joined = await auth_service.signup(
         db_session, BackgroundTasks(), email="direct@example.com", password="hunter2222", display_name="Direct Test"
     )
     assert user.email == "direct@example.com"
@@ -56,7 +56,7 @@ async def test_login_service_rejects_wrong_password(db_session):
 
 
 async def test_delete_account_service_requires_correct_password(db_session):
-    _, _, user, _reconnect = await auth_service.signup(
+    _, _, user, _reconnect, _joined = await auth_service.signup(
         db_session, BackgroundTasks(), email="deletesvc@example.com", password="hunter2222", display_name="Delete Svc"
     )
     try:

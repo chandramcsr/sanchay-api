@@ -28,7 +28,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def signup(
     request: Request, payload: SignupRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
 ) -> TokenResponse:
-    access_token, refresh_token, user, reconnect_summary = await auth_service.signup(
+    access_token, refresh_token, user, reconnect_summary, joined_groups = await auth_service.signup(
         db, background_tasks, email=payload.email, password=payload.password, display_name=payload.display_name
     )
     reconnected_history = (
@@ -41,6 +41,7 @@ async def signup(
         refresh_token=refresh_token,
         user=UserOut.model_validate(user),
         reconnected_history=reconnected_history,
+        joined_groups=joined_groups,
     )
 
 

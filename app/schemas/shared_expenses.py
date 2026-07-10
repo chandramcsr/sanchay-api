@@ -27,6 +27,7 @@ class GroupOut(BaseModel):
     id: str
     name: str
     members: list[GroupMemberOut]
+    pending_invites: list[str]  # emails of people invited but who haven't signed up yet
     created_at: datetime
 
 
@@ -37,6 +38,7 @@ class SharedExpenseCreateRequest(BaseModel):
     amount: float = Field(gt=0)
     expense_date: str  # YYYY-MM-DD
     participant_ids: list[str] = Field(min_length=1)
+    category: str = "Other"
 
     @field_validator("description")
     @classmethod
@@ -50,6 +52,7 @@ class SharedExpenseCreateRequest(BaseModel):
 class SharedExpenseEditRequest(BaseModel):
     amount: float | None = Field(default=None, gt=0)
     description: str | None = None
+    category: str | None = None
 
 
 class SplitOut(BaseModel):
@@ -64,6 +67,7 @@ class SharedExpenseOut(BaseModel):
     paid_by: str | None
     paid_by_name: str
     description: str
+    category: str
     amount: str
     expense_date: str
     splits: list[SplitOut]

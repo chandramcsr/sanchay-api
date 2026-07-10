@@ -4,6 +4,7 @@ from app.models.group import Group
 from app.models.group_member import GroupMember
 from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
+from app.models.pending_group_invite import PendingGroupInvite
 from app.models.refresh_token import RefreshToken
 from app.models.settlement import Settlement
 from app.models.shared_expense import SharedExpense
@@ -24,4 +25,5 @@ __all__ = [
     "SharedExpenseSplit",
     "SharedExpenseComment",
     "Settlement",
+    "PendingGroupInvite",
 ]
