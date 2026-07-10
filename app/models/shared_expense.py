@@ -40,6 +40,12 @@ class SharedExpense(Base):
     # non-empty table is exactly the migration class that broke a live
     # deploy once before in this project. Not repeating that.
     category: Mapped[str] = mapped_column(String(50), nullable=False, server_default="Other")
+    # Same server_default reasoning as category — this table may
+    # already have rows by the time this migrates. "equal" matches
+    # the only split behavior that existed before this column did, so
+    # every pre-existing expense is correctly described as "equal"
+    # without needing a backfill.
+    split_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="equal")
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     expense_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)

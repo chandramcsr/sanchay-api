@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -75,6 +76,12 @@ class SharedExpenseCreateRequest(BaseModel):
     participant_ids: list[str] = Field(default_factory=list)
     pending_participants: list[MemberInvite] = Field(default_factory=list)
     category: str = "Other"
+    split_type: Literal["equal", "shares", "percentage", "exact"] = "equal"
+    # Keyed by user_id for real participants, or the pending
+    # participant's normalized (lowercase) email — only read when
+    # split_type != "equal". Value meaning depends on split_type:
+    # a share count, a percentage (0-100), or an exact dollar amount.
+    participant_values: dict[str, float] = Field(default_factory=dict)
 
     @field_validator("description")
     @classmethod
@@ -102,6 +109,8 @@ class SharedExpenseEditRequest(BaseModel):
     expense_date: str | None = None
     participant_ids: list[str] | None = None
     pending_participants: list[MemberInvite] | None = None
+    split_type: Literal["equal", "shares", "percentage", "exact"] | None = None
+    participant_values: dict[str, float] | None = None
 
 
 class SplitOut(BaseModel):
@@ -117,6 +126,7 @@ class SharedExpenseOut(BaseModel):
     paid_by_name: str
     description: str
     category: str
+    split_type: str
     amount: str
     expense_date: str
     splits: list[SplitOut]

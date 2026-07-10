@@ -39,7 +39,7 @@ before touching this file:
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 
 from jwt_library import hash_token
 from sqlalchemy import select
@@ -65,6 +65,37 @@ def email_reference(email: str) -> str:
     anyone's actual email to other group members.
     """
     return hash_token(email.strip().lower())
+
+
+def _split_by_weights(total: Decimal, weights: dict[str, Decimal]) -> dict[str, Decimal]:
+    """
+    The general case split_evenly, split_by_shares, and
+    split_by_percentage all reduce to: distribute `total` among keys
+    proportional to their weight, using the largest-remainder method
+    so the parts always sum to `total` exactly regardless of rounding
+    — the property that actually matters, since a split that doesn't
+    sum to the total means the group balance can never truly reach
+    zero even after everyone pays. Weights don't need to sum to
+    anything in particular (shares and percentages both work — 2:1:1
+    shares and 50:25:25 percentages produce identical splits); they
+    only need to be non-negative and not all zero.
+    """
+    keys = list(weights.keys())
+    total_weight = sum(weights.values())
+    if not keys or total_weight <= 0:
+        return {}
+
+    cents_total = int((total * 100).to_integral_value())
+    exact_cents = {k: (Decimal(cents_total) * weights[k] / total_weight) for k in keys}
+    base_cents = {k: int(exact_cents[k].to_integral_value(rounding=ROUND_FLOOR)) for k in keys}
+    remainder_cents = cents_total - sum(base_cents.values())
+
+    remainders = sorted(keys, key=lambda k: exact_cents[k] - base_cents[k], reverse=True)
+    shares_cents = dict(base_cents)
+    for i in range(remainder_cents):
+        shares_cents[remainders[i]] += 1
+
+    return {k: (Decimal(c) / 100).quantize(Decimal("0.01")) for k, c in shares_cents.items()}
 
 
 def split_evenly(total: Decimal, participant_ids: list[str]) -> dict[str, Decimal]:
@@ -94,6 +125,58 @@ def split_evenly(total: Decimal, participant_ids: list[str]) -> dict[str, Decima
         shares_cents[remainders[i][0]] += 1
 
     return {pid: (Decimal(cents) / 100).quantize(Decimal("0.01")) for pid, cents in shares_cents.items()}
+
+
+class SplitValidationError(ValueError):
+    """Raised by split_by_percentage/split_exact when the given values don't add up — a real, expected user-facing error, not a bug."""
+
+
+def split_by_shares(total: Decimal, shares: dict[str, Decimal]) -> dict[str, Decimal]:
+    """
+    Proportional split — "Alice gets 2 shares, Bob gets 1" means Alice
+    owes twice what Bob does, regardless of how many people are
+    involved or what the total is. Zero-or-negative total shares for
+    everyone is rejected (nothing to distribute proportionally); an
+    individual share of 0 is fine (that person owes nothing but stays
+    listed, e.g. someone who didn't eat but is still on the bill).
+    """
+    if sum(shares.values()) <= 0:
+        raise SplitValidationError("At least one person needs a positive share")
+    return _split_by_weights(total, shares)
+
+
+def split_by_percentage(total: Decimal, percentages: dict[str, Decimal]) -> dict[str, Decimal]:
+    """
+    Percentages must sum to exactly 100 — unlike shares (which are
+    just relative weights and can be any positive numbers), a
+    percentage split is explicitly claiming "this is the whole bill,
+    divided this way," so 97% or 103% is almost certainly a mistake
+    the person would want caught immediately, not silently
+    renormalized to add up anyway.
+    """
+    total_pct = sum(percentages.values())
+    if total_pct != Decimal("100"):
+        raise SplitValidationError(f"Percentages must add up to 100, got {total_pct}")
+    return _split_by_weights(total, percentages)
+
+
+def split_exact(total: Decimal, amounts: dict[str, Decimal]) -> dict[str, Decimal]:
+    """
+    Each person's share is given directly, in dollars — the split
+    math itself is a no-op (there's no rounding to do; the person
+    already typed exact cent amounts). What this function actually
+    does is enforce the one thing that has to be true regardless of
+    split method: the parts must sum to the total exactly. A mismatch
+    is surfaced immediately as a real, expected error — silently
+    accepting amounts that don't add up would mean the group balance
+    can never truly reach zero even after everyone pays, exactly the
+    failure mode every other split method in this file exists to
+    prevent.
+    """
+    given_total = sum(amounts.values())
+    if given_total != total:
+        raise SplitValidationError(f"Amounts must add up to the total (${total}), got ${given_total}")
+    return dict(amounts)
 
 
 async def add_member_to_group(db: AsyncSession, *, group_id: str, user_id: str) -> None:
@@ -201,6 +284,8 @@ async def create_shared_expense(
     participant_ids: list[str],
     pending_participants: list[dict] | None = None,
     category: str = "Other",
+    split_type: str = "equal",
+    participant_values: dict[str, Decimal] | None = None,
 ) -> SharedExpense:
     """
     pending_participants is a list of {"email": str, "name": str} for
@@ -230,13 +315,17 @@ async def create_shared_expense(
         paid_by_name_snapshot=payer.display_name if payer else "Unknown",
         description=description,
         category=category,
+        split_type=split_type,
         amount=amount,
         expense_date=expense_date,
     )
     db.add(expense)
     await db.flush()
 
-    await _write_splits(db, shared_expense_id=expense.id, amount=amount, participant_ids=participant_ids, pending_participants=pending_participants)
+    await _write_splits(
+        db, shared_expense_id=expense.id, amount=amount, participant_ids=participant_ids, pending_participants=pending_participants,
+        split_type=split_type, values=participant_values,
+    )
 
     await db.commit()
     await db.refresh(expense)
@@ -244,7 +333,14 @@ async def create_shared_expense(
 
 
 async def _write_splits(
-    db: AsyncSession, *, shared_expense_id: str, amount: Decimal, participant_ids: list[str], pending_participants: list[dict] | None
+    db: AsyncSession,
+    *,
+    shared_expense_id: str,
+    amount: Decimal,
+    participant_ids: list[str],
+    pending_participants: list[dict] | None,
+    split_type: str = "equal",
+    values: dict[str, Decimal] | None = None,
 ) -> None:
     """
     Shared by create_shared_expense and edit_shared_expense (when
@@ -254,8 +350,19 @@ async def _write_splits(
     split math (and its sum-equals-total guarantee) runs over
     everyone at once — a real user's id, or a pending participant's
     normalized email/email_ref (a string just as good as a key;
-    split_evenly only cares that keys are distinct and stable, not
-    what they mean).
+    the splitting functions only care that keys are distinct and
+    stable, not what they mean).
+
+    split_type dispatches to the right math (split_evenly /
+    split_by_shares / split_by_percentage / split_exact) — values is
+    only consulted for the non-"equal" cases, keyed the same way as
+    all_keys (real participant_id, or a pending participant's
+    normalized email). A key missing from values is treated as
+    weight/amount 0 for shares/exact (present but contributing
+    nothing — e.g. someone added to the split with no value entered
+    yet); split_by_percentage and split_exact will then correctly
+    reject the request if that leaves the total short, via their own
+    validation.
 
     Each pending_participants dict is either {"email": str, "name":
     str} — a genuinely NEW pending participant, whose email needs
@@ -292,8 +399,21 @@ async def _write_splits(
         return p.get("email_ref") or p["email"].strip().lower()
 
     all_keys = list(participant_ids) + [pending_key(p) for p in pending]
-    shares = split_evenly(amount, all_keys)
     pending_by_key = {pending_key(p): p for p in pending}
+
+    if split_type == "equal":
+        shares = split_evenly(amount, all_keys)
+    else:
+        vals = values or {}
+        weights_or_amounts = {k: Decimal(str(vals.get(k, 0))) for k in all_keys}
+        if split_type == "shares":
+            shares = split_by_shares(amount, weights_or_amounts)
+        elif split_type == "percentage":
+            shares = split_by_percentage(amount, weights_or_amounts)
+        elif split_type == "exact":
+            shares = split_exact(amount, weights_or_amounts)
+        else:
+            raise ValueError(f"Unknown split_type: {split_type}")
 
     for key, share in shares.items():
         if key in pending_by_key:
@@ -328,6 +448,8 @@ async def edit_shared_expense(
     new_expense_date: str | None = None,
     new_participant_ids: list[str] | None = None,
     new_pending_participants: list[dict] | None = None,
+    new_split_type: str | None = None,
+    new_participant_values: dict[str, Decimal] | None = None,
 ) -> SharedExpense:
     """
     Corrects the ONE shared record and re-splits it — not a private
@@ -358,6 +480,7 @@ async def edit_shared_expense(
     changes = []
     participants_changing = new_participant_ids is not None or new_pending_participants is not None
     amount_changing = new_amount is not None and new_amount != expense.amount
+    split_config_changing = new_split_type is not None or new_participant_values is not None
 
     if amount_changing:
         changes.append(f"amount from ${expense.amount:.2f} to ${new_amount:.2f}")
@@ -366,17 +489,21 @@ async def edit_shared_expense(
     if participants_changing:
         changes.append("who's splitting this")
 
-    if amount_changing or participants_changing:
+    if split_config_changing and not participants_changing:
+        changes.append("how it's split")
+
+    if amount_changing or participants_changing or split_config_changing:
         if participants_changing:
             participant_ids = new_participant_ids if new_participant_ids is not None else []
             pending_participants = new_pending_participants if new_pending_participants is not None else []
         else:
-            # Amount changed but the participant set didn't — reconstruct
-            # the CURRENT set (real + pending) from the existing splits.
-            # Pending participants only ever have their HASHED email_ref
-            # stored, never the raw address — passed through as-is via
-            # the "email_ref" key so _write_splits doesn't re-hash it
-            # (see _write_splits' own docstring for why that matters).
+            # Amount and/or split config changed but the participant set
+            # didn't — reconstruct the CURRENT set (real + pending) from
+            # the existing splits. Pending participants only ever have
+            # their HASHED email_ref stored, never the raw address —
+            # passed through as-is via the "email_ref" key so
+            # _write_splits doesn't re-hash it (see _write_splits' own
+            # docstring for why that matters).
             result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
             existing_splits = list(result.scalars().all())
             participant_ids = [s.user_id for s in existing_splits if s.user_id is not None]
@@ -384,9 +511,18 @@ async def edit_shared_expense(
                 {"email_ref": s.email_ref, "name": s.name_snapshot} for s in existing_splits if s.user_id is None
             ]
 
+        # The PERSISTED split_type is the correct fallback here, not a
+        # hardcoded "equal" — someone adjusting only the VALUES of an
+        # existing percentage split (without re-sending split_type,
+        # since it didn't change) must still re-split as a percentage
+        # split, not silently revert to equal.
+        effective_split_type = new_split_type if new_split_type is not None else expense.split_type
+        expense.split_type = effective_split_type
+
         await _write_splits(
             db, shared_expense_id=expense_id, amount=expense.amount,
             participant_ids=participant_ids, pending_participants=pending_participants,
+            split_type=effective_split_type, values=new_participant_values,
         )
 
     if new_description is not None and new_description != expense.description:

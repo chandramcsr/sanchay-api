@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.core.security import hash_password
@@ -16,7 +17,11 @@ from app.services.shared_expense_service import (
     ensure_pending_invite,
     freeze_user_references,
     record_settlement,
+    split_by_percentage,
+    split_by_shares,
     split_evenly,
+    split_exact,
+    SplitValidationError,
 )
 
 
@@ -65,6 +70,76 @@ def test_empty_participant_list_returns_empty_without_crashing():
 
 def test_zero_amount_splits_to_zero_for_everyone():
     assert split_evenly(Decimal("0.00"), ["a", "b"]) == {"a": Decimal("0.00"), "b": Decimal("0.00")}
+
+
+# ---------- split_by_shares ----------
+
+def test_shares_split_proportionally_not_evenly():
+    # Alice gets 2 shares, Bob gets 1 — Alice owes twice what Bob does.
+    shares = split_by_shares(Decimal("90.00"), {"alice": Decimal("2"), "bob": Decimal("1")})
+    assert shares == {"alice": Decimal("60.00"), "bob": Decimal("30.00")}
+
+
+def test_shares_still_sum_to_total_when_it_does_not_divide_cleanly():
+    shares = split_by_shares(Decimal("100.00"), {"alice": Decimal("2"), "bob": Decimal("1")})
+    assert sum(shares.values()) == Decimal("100.00")
+
+
+def test_a_zero_share_is_allowed_and_gets_nothing():
+    shares = split_by_shares(Decimal("60.00"), {"alice": Decimal("1"), "bob": Decimal("1"), "carol": Decimal("0")})
+    assert shares["carol"] == Decimal("0.00")
+    assert shares["alice"] == Decimal("30.00")
+    assert shares["bob"] == Decimal("30.00")
+
+
+def test_equal_shares_produce_the_same_result_as_split_evenly():
+    equal = split_evenly(Decimal("100.00"), ["a", "b", "c"])
+    via_shares = split_by_shares(Decimal("100.00"), {"a": Decimal("1"), "b": Decimal("1"), "c": Decimal("1")})
+    assert equal == via_shares
+
+
+def test_all_zero_shares_is_rejected():
+    with pytest.raises(SplitValidationError):
+        split_by_shares(Decimal("50.00"), {"a": Decimal("0"), "b": Decimal("0")})
+
+
+# ---------- split_by_percentage ----------
+
+def test_percentage_split_divides_proportionally():
+    shares = split_by_percentage(Decimal("100.00"), {"alice": Decimal("60"), "bob": Decimal("40")})
+    assert shares == {"alice": Decimal("60.00"), "bob": Decimal("40.00")}
+
+
+def test_percentages_must_sum_to_exactly_100():
+    with pytest.raises(SplitValidationError):
+        split_by_percentage(Decimal("100.00"), {"alice": Decimal("60"), "bob": Decimal("39")})  # 99, not 100
+
+
+def test_percentages_summing_to_over_100_is_also_rejected():
+    with pytest.raises(SplitValidationError):
+        split_by_percentage(Decimal("100.00"), {"alice": Decimal("60"), "bob": Decimal("50")})  # 110
+
+
+def test_uneven_percentage_split_still_sums_to_the_real_total():
+    shares = split_by_percentage(Decimal("33.33"), {"alice": Decimal("33.33"), "bob": Decimal("33.33"), "carol": Decimal("33.34")})
+    assert sum(shares.values()) == Decimal("33.33")
+
+
+# ---------- split_exact ----------
+
+def test_exact_split_uses_the_given_amounts_directly():
+    shares = split_exact(Decimal("100.00"), {"alice": Decimal("70.00"), "bob": Decimal("30.00")})
+    assert shares == {"alice": Decimal("70.00"), "bob": Decimal("30.00")}
+
+
+def test_exact_amounts_must_sum_to_the_real_total():
+    with pytest.raises(SplitValidationError):
+        split_exact(Decimal("100.00"), {"alice": Decimal("70.00"), "bob": Decimal("25.00")})  # 95, not 100
+
+
+def test_exact_amounts_over_the_total_is_also_rejected():
+    with pytest.raises(SplitValidationError):
+        split_exact(Decimal("100.00"), {"alice": Decimal("70.00"), "bob": Decimal("35.00")})  # 105
 
 
 # ---------- create_shared_expense / compute_balance ----------

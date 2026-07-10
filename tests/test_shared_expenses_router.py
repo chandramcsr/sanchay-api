@@ -861,3 +861,128 @@ async def test_edit_expense_date(client):
 
     comments = await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}/comments", headers=_auth(alice_token))
     assert "2026-07-02" in comments.json()[0]["body"]  # logged as visible history, same as any other edit
+
+
+# ---------- alternate split types: shares, percentage, exact ----------
+
+async def test_create_expense_split_by_shares(client):
+    alice_token, alice_id = await _signup(client, "alice-split1@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-split1@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-split1@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 90.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out",
+            "split_type": "shares", "participant_values": {alice_id: 2, bob_id: 1},
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["split_type"] == "shares"
+    shares = {s["name"]: s["share_amount"] for s in r.json()["splits"]}
+    assert shares == {"Alice": "60.00", "Bob": "30.00"}  # 2:1 ratio of $90
+
+
+async def test_create_expense_split_by_percentage(client):
+    alice_token, alice_id = await _signup(client, "alice-split2@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-split2@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-split2@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out",
+            "split_type": "percentage", "participant_values": {alice_id: 70, bob_id: 30},
+        },
+    )
+    assert r.status_code == 201
+    shares = {s["name"]: s["share_amount"] for s in r.json()["splits"]}
+    assert shares == {"Alice": "70.00", "Bob": "30.00"}
+
+
+async def test_create_expense_split_by_percentage_rejects_bad_total(client):
+    alice_token, alice_id = await _signup(client, "alice-split3@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-split3@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-split3@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out",
+            "split_type": "percentage", "participant_values": {alice_id: 70, bob_id: 20},  # 90, not 100
+        },
+    )
+    assert r.status_code == 400  # a real 400, not a raw 500 from the unhandled validation error
+
+
+async def test_create_expense_split_exact_amounts(client):
+    alice_token, alice_id = await _signup(client, "alice-split4@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-split4@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-split4@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out",
+            "split_type": "exact", "participant_values": {alice_id: 62.50, bob_id: 37.50},
+        },
+    )
+    assert r.status_code == 201
+    shares = {s["name"]: s["share_amount"] for s in r.json()["splits"]}
+    assert shares == {"Alice": "62.50", "Bob": "37.50"}
+
+
+async def test_expense_defaults_to_equal_split_type_when_not_specified(client):
+    alice_token, alice_id = await _signup(client, "alice-split5@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    assert r.json()["split_type"] == "equal"
+
+
+async def test_edit_expense_switches_split_type_and_persists_it(client):
+    """
+    The specific gap this guards: adjusting only the VALUES of an
+    already-percentage-split expense (not re-sending split_type, since
+    it didn't change) must still re-split as a percentage split --
+    verified by making TWO edits, where the second only sends new
+    values and no split_type at all.
+    """
+    alice_token, alice_id = await _signup(client, "alice-split6@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-split6@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-split6@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+    assert expense_resp.json()["split_type"] == "equal"
+
+    # First edit: switch to percentage, 70/30.
+    r1 = await client.patch(
+        f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token),
+        json={"split_type": "percentage", "participant_values": {alice_id: 70, bob_id: 30}},
+    )
+    assert r1.json()["split_type"] == "percentage"
+    assert {s["name"]: s["share_amount"] for s in r1.json()["splits"]} == {"Alice": "70.00", "Bob": "30.00"}
+
+    # Second edit: ONLY new values, split_type omitted entirely — must
+    # still re-split as percentage, not silently revert to equal.
+    r2 = await client.patch(
+        f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token),
+        json={"participant_values": {alice_id: 40, bob_id: 60}},
+    )
+    assert r2.json()["split_type"] == "percentage"  # still percentage, not reverted
+    assert {s["name"]: s["share_amount"] for s in r2.json()["splits"]} == {"Alice": "40.00", "Bob": "60.00"}

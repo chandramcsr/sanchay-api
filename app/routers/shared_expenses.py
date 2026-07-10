@@ -37,6 +37,7 @@ from app.schemas.shared_expenses import (
     SplitOut,
 )
 from app.services import shared_expense_service as svc
+from app.services.shared_expense_service import SplitValidationError
 
 router = APIRouter(prefix="/shared-expenses", tags=["shared-expenses"])
 
@@ -233,6 +234,7 @@ def _expense_to_out(expense, splits) -> SharedExpenseOut:
         paid_by_name=expense.paid_by_name_snapshot,
         description=expense.description,
         category=expense.category,
+        split_type=expense.split_type,
         amount=str(expense.amount),
         expense_date=expense.expense_date,
         splits=[SplitOut(user_id=s.user_id, name=s.name_snapshot, share_amount=str(s.share_amount)) for s in splits],
@@ -269,17 +271,22 @@ async def create_expense(
             invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
         )
 
-    expense = await svc.create_shared_expense(
-        db,
-        group_id=group_id,
-        paid_by=current_user.id,  # always the caller — see module docstring
-        description=payload.description,
-        amount=_to_decimal(payload.amount, "amount"),
-        expense_date=payload.expense_date,
-        participant_ids=payload.participant_ids,
-        pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants],
-        category=payload.category,
-    )
+    try:
+        expense = await svc.create_shared_expense(
+            db,
+            group_id=group_id,
+            paid_by=current_user.id,  # always the caller — see module docstring
+            description=payload.description,
+            amount=_to_decimal(payload.amount, "amount"),
+            expense_date=payload.expense_date,
+            participant_ids=payload.participant_ids,
+            pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants],
+            category=payload.category,
+            split_type=payload.split_type,
+            participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()},
+        )
+    except SplitValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     splits = await svc.get_expense_splits(db, expense_id=expense.id)
     return _expense_to_out(expense, splits)
 
@@ -344,13 +351,18 @@ async def edit_expense(
                 invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
             )
 
-    updated = await svc.edit_shared_expense(
-        db, expense_id=expense_id, edited_by=current_user.id,
-        new_amount=new_amount, new_description=payload.description, new_category=payload.category,
-        new_expense_date=payload.expense_date,
-        new_participant_ids=payload.participant_ids,
-        new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
-    )
+    try:
+        updated = await svc.edit_shared_expense(
+            db, expense_id=expense_id, edited_by=current_user.id,
+            new_amount=new_amount, new_description=payload.description, new_category=payload.category,
+            new_expense_date=payload.expense_date,
+            new_participant_ids=payload.participant_ids,
+            new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
+            new_split_type=payload.split_type,
+            new_participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()} if payload.participant_values is not None else None,
+        )
+    except SplitValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     splits = await svc.get_expense_splits(db, expense_id=expense_id)
     return _expense_to_out(updated, splits)
 
