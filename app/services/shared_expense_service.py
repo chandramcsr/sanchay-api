@@ -96,6 +96,28 @@ def split_evenly(total: Decimal, participant_ids: list[str]) -> dict[str, Decima
     return {pid: (Decimal(cents) / 100).quantize(Decimal("0.01")) for pid, cents in shares_cents.items()}
 
 
+async def add_member_to_group(db: AsyncSession, *, group_id: str, user_id: str) -> None:
+    """
+    Adds an already-resolved user to an already-existing group. Kept
+    separate from create_group's inline member creation rather than
+    having create_group call this in a loop — create_group needs a
+    flush() before any GroupMember rows can reference the new group's
+    id, a step this function (working against a group that already
+    exists) doesn't need.
+    """
+    existing = await db.execute(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == user_id))
+    if existing.scalar_one_or_none() is not None:
+        return  # already a member — silently a no-op, not an error
+    user = await db.get(User, user_id)
+    db.add(GroupMember(
+        group_id=group_id,
+        user_id=user_id,
+        email_ref=email_reference(user.email) if user else "",
+        name_snapshot=user.display_name if user else "Unknown",
+    ))
+    await db.commit()
+
+
 async def create_group(db: AsyncSession, *, name: str, created_by: str, member_ids: list[str]) -> Group:
     group = Group(name=name, created_by=created_by)
     db.add(group)
@@ -421,6 +443,13 @@ async def get_group_members(db: AsyncSession, *, group_id: str) -> list[GroupMem
 async def get_group_pending_invites(db: AsyncSession, *, group_id: str) -> list[str]:
     result = await db.execute(select(PendingGroupInvite.email).where(PendingGroupInvite.group_id == group_id))
     return [row[0] for row in result.all()]
+
+
+async def has_pending_invite(db: AsyncSession, *, group_id: str, email: str) -> bool:
+    result = await db.execute(
+        select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id, PendingGroupInvite.email == email.strip().lower())
+    )
+    return result.scalar_one_or_none() is not None
 
 
 async def get_group_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:

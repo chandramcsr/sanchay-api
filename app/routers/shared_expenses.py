@@ -21,6 +21,7 @@ from app.core.deps import get_current_user
 from app.models.user import User
 from app.repositories import user_repository
 from app.schemas.shared_expenses import (
+    AddMemberRequest,
     BalanceOut,
     CommentCreateRequest,
     CommentOut,
@@ -110,6 +111,38 @@ async def get_group_detail(
     group = await svc.get_group(db, group_id=group_id)
     if group is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
+    return await _group_to_out(db, group)
+
+
+@router.post("/groups/{group_id}/members", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
+async def add_group_member(
+    group_id: str,
+    payload: AddMemberRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> GroupOut:
+    """
+    The gap this closes: member_emails on GroupCreateRequest only
+    ever ran at creation time — there was no way to add someone to a
+    group after the fact, reported directly. Same resolve-or-invite
+    logic as create_group (existing account -> real member,
+    no account yet -> pending invite + email), just against a group
+    that already exists.
+    """
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    group = await svc.get_group(db, group_id=group_id)
+    if group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
+
+    user = await user_repository.get_by_email(db, payload.email.lower())
+    if user is not None:
+        await svc.add_member_to_group(db, group_id=group_id, user_id=user.id)
+    elif not await svc.has_pending_invite(db, group_id=group_id, email=payload.email):
+        await svc.create_pending_invite(
+            db, background_tasks, group_id=group_id, email=payload.email, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
+        )
+
     return await _group_to_out(db, group)
 
 

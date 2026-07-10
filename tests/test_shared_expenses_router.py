@@ -425,3 +425,63 @@ async def test_non_member_cannot_delete_a_group(client):
 
     get_r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
     assert get_r.status_code == 200  # still there, untouched
+
+
+# ---------- adding a member to an existing group ----------
+
+async def test_add_an_existing_account_as_a_member(client):
+    alice_token, _ = await _signup(client, "alice-am1@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-am1@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "bob-am1@example.com"})
+    assert r.status_code == 201
+    member_ids = [m["user_id"] for m in r.json()["members"]]
+    assert bob_id in member_ids
+
+
+async def test_add_a_member_who_has_no_account_creates_a_pending_invite(client):
+    alice_token, _ = await _signup(client, "alice-am2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "future-roommate-am2@example.com"})
+    assert r.status_code == 201
+    assert r.json()["pending_invites"] == ["future-roommate-am2@example.com"]
+
+    # And it works end to end, same as an invite made at creation time.
+    signup_resp = await client.post("/api/v1/auth/signup", json={"email": "future-roommate-am2@example.com", "password": "hunter2222", "display_name": "Later"})
+    assert signup_resp.json()["joined_groups"] == ["Roommates"]
+
+
+async def test_adding_an_already_existing_member_is_a_harmless_no_op(client):
+    alice_token, _ = await _signup(client, "alice-am3@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-am3@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "member_emails": ["bob-am3@example.com"]})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "bob-am3@example.com"})
+    assert r.status_code == 201
+    member_ids = [m["user_id"] for m in r.json()["members"]]
+    assert member_ids.count(bob_id) == 1  # not duplicated
+
+
+async def test_adding_the_same_pending_email_twice_does_not_duplicate_the_invite(client):
+    alice_token, _ = await _signup(client, "alice-am4@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "twice-am4@example.com"})
+    r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "twice-am4@example.com"})
+    assert r.json()["pending_invites"] == ["twice-am4@example.com"]  # exactly one, not two
+
+
+async def test_non_member_cannot_add_someone_to_a_group(client):
+    alice_token, _ = await _signup(client, "alice-am5@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-am5@example.com", "Stranger")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(stranger_token), json={"email": "whoever@example.com"})
+    assert r.status_code == 404

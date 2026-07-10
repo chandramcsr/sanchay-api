@@ -18,6 +18,10 @@ class GroupCreateRequest(BaseModel):
         return v
 
 
+class AddMemberRequest(BaseModel):
+    email: EmailStr
+
+
 class GroupRenameRequest(BaseModel):
     name: str
 
