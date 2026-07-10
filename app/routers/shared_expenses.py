@@ -318,16 +318,54 @@ async def get_expense_detail(
 async def edit_expense(
     expense_id: str,
     payload: SharedExpenseEditRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SharedExpenseOut:
-    await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
+    expense = await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
     new_amount = _to_decimal(payload.amount, "amount") if payload.amount is not None else None
-    expense = await svc.edit_shared_expense(
-        db, expense_id=expense_id, edited_by=current_user.id, new_amount=new_amount, new_description=payload.description, new_category=payload.category
+
+    participants_changing = payload.participant_ids is not None or payload.pending_participants is not None
+    if participants_changing:
+        real_ids = payload.participant_ids or []
+        pending = payload.pending_participants or []
+        if not real_ids and not pending:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="At least one participant is required")
+
+        group_member_ids = {m.user_id for m in await svc.get_group_members(db, group_id=expense.group_id) if m.user_id}
+        invalid = set(real_ids) - group_member_ids
+        if invalid:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="All participants must be members of this group")
+
+        group = await svc.get_group(db, group_id=expense.group_id)
+        for p in pending:
+            await svc.ensure_pending_invite(
+                db, background_tasks, group_id=expense.group_id, email=p.email, name=p.name,
+                invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+            )
+
+    updated = await svc.edit_shared_expense(
+        db, expense_id=expense_id, edited_by=current_user.id,
+        new_amount=new_amount, new_description=payload.description, new_category=payload.category,
+        new_participant_ids=payload.participant_ids,
+        new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
     )
     splits = await svc.get_expense_splits(db, expense_id=expense_id)
-    return _expense_to_out(expense, splits)
+    return _expense_to_out(updated, splits)
+
+
+@router.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_expense(
+    expense_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Unlike a group or a member, an individual expense has no
+    expense-history-of-its-own to protect — deleting it IS the
+    action, not something that could orphan a deeper record. Any
+    group member can delete it, same as any other expense action.
+    """
+    await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
+    await svc.delete_shared_expense(db, expense_id=expense_id)
 
 
 @router.get("/expenses/{expense_id}/comments", response_model=list[CommentOut])

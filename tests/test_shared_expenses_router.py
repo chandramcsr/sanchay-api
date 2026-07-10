@@ -672,3 +672,174 @@ async def test_non_member_cannot_remove_anyone_from_a_group(client):
 
     r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}/members/{bob_id}", headers=_auth(stranger_token))
     assert r.status_code == 404
+
+
+# ---------- deleting an expense ----------
+
+async def test_delete_an_expense(client):
+    alice_token, alice_id = await _signup(client, "alice-del-exp1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token))
+    assert r.status_code == 204
+
+    get_r = await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token))
+    assert get_r.status_code == 404  # genuinely gone
+
+    list_r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))
+    assert list_r.json() == []
+
+
+async def test_non_member_cannot_delete_an_expense(client):
+    alice_token, alice_id = await _signup(client, "alice-del-exp2@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-del-exp2@example.com", "Stranger")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(stranger_token))
+    assert r.status_code == 404
+
+    get_r = await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token))
+    assert get_r.status_code == 200  # still there
+
+
+# ---------- editing WHO is included in an expense ----------
+
+async def test_edit_expense_to_add_a_participant_rebuilds_the_split(client):
+    alice_token, alice_id = await _signup(client, "alice-edp1@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-edp1@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-edp1@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+    assert len(expense_resp.json()["splits"]) == 1  # just Alice initially
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"participant_ids": [alice_id, bob_id]})
+    assert r.status_code == 200
+    splits = {s["name"]: s["share_amount"] for s in r.json()["splits"]}
+    assert splits == {"Alice": "50.00", "Bob": "50.00"}
+
+
+async def test_edit_expense_to_remove_a_participant_rebuilds_the_split(client):
+    alice_token, alice_id = await _signup(client, "alice-edp2@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-edp2@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": [{"email": "bob-edp2@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"participant_ids": [alice_id]})
+    assert r.status_code == 200
+    assert len(r.json()["splits"]) == 1
+    assert r.json()["splits"][0]["name"] == "Alice"
+    assert r.json()["splits"][0]["share_amount"] == "100.00"
+
+
+async def test_cannot_edit_expense_to_zero_participants(client):
+    alice_token, alice_id = await _signup(client, "alice-edp3@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"participant_ids": []})
+    assert r.status_code == 400
+
+
+async def test_cannot_edit_expense_to_include_someone_outside_the_group(client):
+    alice_token, alice_id = await _signup(client, "alice-edp4@example.com", "Alice")
+    _, outsider_id = await _signup(client, "outsider-edp4@example.com", "Outsider")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"participant_ids": [alice_id, outsider_id]})
+    assert r.status_code == 400
+
+
+async def test_edit_expense_amount_only_updates_a_pending_participants_share_too(client):
+    """
+    The exact bug caught and fixed while building this: editing only
+    the AMOUNT (not participants) must still correctly recalculate a
+    PENDING participant's share -- the old inline re-split logic
+    silently excluded them, freezing their share_amount at the old
+    value and breaking the sum-equals-total guarantee.
+    """
+    alice_token, alice_id = await _signup(client, "alice-edp5@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [{"email": "sam-edp5@example.com", "name": "Sam"}], "category": "Dining Out",
+        },
+    )
+    expense_id = expense_resp.json()["id"]
+    original_splits = {s["name"]: s for s in expense_resp.json()["splits"]}
+    assert original_splits["Sam"]["share_amount"] == "50.00"
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"amount": 80.00})
+    assert r.status_code == 200
+    from decimal import Decimal
+    new_splits = {s["name"]: s for s in r.json()["splits"]}
+    assert new_splits["Sam"]["share_amount"] == "40.00"  # NOT still frozen at 50.00
+    total = sum(Decimal(s["share_amount"]) for s in r.json()["splits"])
+    assert total == Decimal("80.00")  # sum-equals-total still holds
+
+
+async def test_editing_amount_only_does_not_change_a_pending_participants_email_ref(client):
+    """
+    The bug caught while writing THIS fix: reconstructing a pending
+    participant from their existing split for a re-split must reuse
+    their EXISTING (already-hashed) email_ref directly, not re-derive
+    it by hashing the hash -- which would silently break
+    reconnect_by_email()'s ability to ever find this split again once
+    they actually sign up. Verified end-to-end: sign up with the same
+    email AFTER an amount-only edit, and confirm the split still
+    reconnects correctly.
+    """
+    alice_token, alice_id = await _signup(client, "alice-edp6@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [{"email": "sam-edp6@example.com", "name": "Sam"}], "category": "Dining Out",
+        },
+    )
+    expense_id = expense_resp.json()["id"]
+
+    await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"amount": 60.00})
+
+    signup_resp = await client.post("/api/v1/auth/signup", json={"email": "sam-edp6@example.com", "password": "hunter2222", "display_name": "Sam"})
+    assert signup_resp.json()["joined_groups"] == ["Trip"]  # the invite itself still resolves correctly
+
+    sam_token = signup_resp.json()["access_token"]
+    balances = await client.get("/api/v1/shared-expenses/balances", headers=_auth(sam_token))
+    assert balances.json()[0]["you_owe_them"] == "30.00"  # half of the EDITED $60, reconnection worked

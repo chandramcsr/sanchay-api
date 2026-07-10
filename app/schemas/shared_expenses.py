@@ -99,6 +99,8 @@ class SharedExpenseEditRequest(BaseModel):
     amount: float | None = Field(default=None, gt=0)
     description: str | None = None
     category: str | None = None
+    participant_ids: list[str] | None = None
+    pending_participants: list[MemberInvite] | None = None
 
 
 class SplitOut(BaseModel):

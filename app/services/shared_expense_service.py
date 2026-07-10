@@ -236,40 +236,85 @@ async def create_shared_expense(
     db.add(expense)
     await db.flush()
 
-    # Build one unified list of participant keys so the split math
-    # (and its sum-equals-total guarantee) runs over everyone at once
-    # — a real user's id, or a pending participant's normalized email
-    # (a string just as good as a key; split_evenly only cares that
-    # keys are distinct and stable, not what they mean).
-    pending = pending_participants or []
-    all_keys = list(participant_ids) + [p["email"].strip().lower() for p in pending]
-    shares = split_evenly(amount, all_keys)
+    await _write_splits(db, shared_expense_id=expense.id, amount=amount, participant_ids=participant_ids, pending_participants=pending_participants)
 
-    pending_by_key = {p["email"].strip().lower(): p for p in pending}
+    await db.commit()
+    await db.refresh(expense)
+    return expense
+
+
+async def _write_splits(
+    db: AsyncSession, *, shared_expense_id: str, amount: Decimal, participant_ids: list[str], pending_participants: list[dict] | None
+) -> None:
+    """
+    Shared by create_shared_expense and edit_shared_expense (when
+    either the amount or who's included changes) — deletes any
+    existing splits for this expense and writes fresh ones for the
+    given participant set, using ONE unified list of keys so the
+    split math (and its sum-equals-total guarantee) runs over
+    everyone at once — a real user's id, or a pending participant's
+    normalized email/email_ref (a string just as good as a key;
+    split_evenly only cares that keys are distinct and stable, not
+    what they mean).
+
+    Each pending_participants dict is either {"email": str, "name":
+    str} — a genuinely NEW pending participant, whose email needs
+    hashing — or {"email_ref": str, "name": str} — a participant being
+    RECONSTRUCTED from an existing split (e.g. re-splitting after an
+    amount-only edit), whose email_ref is already the hash and must
+    be used as-is. Getting this distinction wrong would silently
+    double-hash an already-hashed value, producing a DIFFERENT
+    email_ref than the person's real one — breaking
+    reconnect_by_email()'s ability to ever find and reattach their
+    split when they actually sign up. This was caught and fixed while
+    building the ability to edit an expense's participants, before it
+    shipped: the first draft always called email_reference(p["email"])
+    unconditionally, which is only correct for genuinely new
+    participants.
+
+    Extracting this as its own function also fixed a real,
+    pre-existing bug: the old inline re-split logic in
+    edit_shared_expense filtered to `user_id is not None` before
+    re-splitting, which silently EXCLUDED pending participants from
+    ever having their share recalculated when the amount changed —
+    their share_amount just stayed frozen at the old value, breaking
+    the sum-equals-total guarantee the moment a pending participant
+    was involved.
+    """
+    result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == shared_expense_id))
+    for row in result.scalars().all():
+        await db.delete(row)
+    await db.flush()
+
+    pending = pending_participants or []
+
+    def pending_key(p: dict) -> str:
+        return p.get("email_ref") or p["email"].strip().lower()
+
+    all_keys = list(participant_ids) + [pending_key(p) for p in pending]
+    shares = split_evenly(amount, all_keys)
+    pending_by_key = {pending_key(p): p for p in pending}
 
     for key, share in shares.items():
         if key in pending_by_key:
             p = pending_by_key[key]
+            ref = p.get("email_ref") or email_reference(p["email"])
             db.add(SharedExpenseSplit(
-                shared_expense_id=expense.id,
+                shared_expense_id=shared_expense_id,
                 user_id=None,
-                email_ref=email_reference(p["email"]),
+                email_ref=ref,
                 name_snapshot=p["name"],
                 share_amount=share,
             ))
         else:
             participant = await db.get(User, key)
             db.add(SharedExpenseSplit(
-                shared_expense_id=expense.id,
+                shared_expense_id=shared_expense_id,
                 user_id=key,
                 email_ref=email_reference(participant.email) if participant else "",
                 name_snapshot=participant.display_name if participant else "Unknown",
                 share_amount=share,
             ))
-
-    await db.commit()
-    await db.refresh(expense)
-    return expense
 
 
 async def edit_shared_expense(
@@ -280,12 +325,27 @@ async def edit_shared_expense(
     new_amount: Decimal | None = None,
     new_description: str | None = None,
     new_category: str | None = None,
+    new_participant_ids: list[str] | None = None,
+    new_pending_participants: list[dict] | None = None,
 ) -> SharedExpense:
     """
     Corrects the ONE shared record and re-splits it — not a private
-    copy. Every participant's existing split is recalculated from the
-    new total, and a system comment logs exactly what changed, so an
-    edit is visible history, not a silent rewrite.
+    copy. A system comment logs exactly what changed, so an edit is
+    visible history, not a silent rewrite.
+
+    new_participant_ids/new_pending_participants being non-None means
+    "replace who's included" — not just recalculate the same
+    people's shares. Passing an empty list is a real, meaningful
+    request (remove everyone from that side), which is why the check
+    is `is not None`, not truthiness. When only the amount changes
+    (participants untouched), the CURRENT participant set is
+    reconstructed from the existing splits and re-split via the same
+    path — this also fixes a real bug that existed before this
+    function supported changing participants at all: the old inline
+    re-split logic filtered to `user_id is not None`, which silently
+    excluded pending participants from ever getting their share
+    recalculated when the amount changed, breaking the sum-equals-
+    total guarantee. _write_splits doesn't have that bug.
     """
     expense = await db.get(SharedExpense, expense_id)
     if expense is None:
@@ -295,17 +355,38 @@ async def edit_shared_expense(
     editor_name = editor.display_name if editor else "Unknown"
 
     changes = []
-    if new_amount is not None and new_amount != expense.amount:
+    participants_changing = new_participant_ids is not None or new_pending_participants is not None
+    amount_changing = new_amount is not None and new_amount != expense.amount
+
+    if amount_changing:
         changes.append(f"amount from ${expense.amount:.2f} to ${new_amount:.2f}")
         expense.amount = new_amount
 
-        result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
-        splits = list(result.scalars().all())
-        participant_ids = [s.user_id for s in splits if s.user_id is not None]
-        new_shares = split_evenly(new_amount, participant_ids)
-        for s in splits:
-            if s.user_id in new_shares:
-                s.share_amount = new_shares[s.user_id]
+    if participants_changing:
+        changes.append("who's splitting this")
+
+    if amount_changing or participants_changing:
+        if participants_changing:
+            participant_ids = new_participant_ids if new_participant_ids is not None else []
+            pending_participants = new_pending_participants if new_pending_participants is not None else []
+        else:
+            # Amount changed but the participant set didn't — reconstruct
+            # the CURRENT set (real + pending) from the existing splits.
+            # Pending participants only ever have their HASHED email_ref
+            # stored, never the raw address — passed through as-is via
+            # the "email_ref" key so _write_splits doesn't re-hash it
+            # (see _write_splits' own docstring for why that matters).
+            result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
+            existing_splits = list(result.scalars().all())
+            participant_ids = [s.user_id for s in existing_splits if s.user_id is not None]
+            pending_participants = [
+                {"email_ref": s.email_ref, "name": s.name_snapshot} for s in existing_splits if s.user_id is None
+            ]
+
+        await _write_splits(
+            db, shared_expense_id=expense_id, amount=expense.amount,
+            participant_ids=participant_ids, pending_participants=pending_participants,
+        )
 
     if new_description is not None and new_description != expense.description:
         changes.append(f'description to "{new_description}"')
@@ -612,6 +693,28 @@ async def get_expense_comments(db: AsyncSession, *, expense_id: str) -> list[Sha
         select(SharedExpenseComment).where(SharedExpenseComment.shared_expense_id == expense_id).order_by(SharedExpenseComment.created_at)
     )
     return list(result.scalars().all())
+
+
+async def delete_shared_expense(db: AsyncSession, *, expense_id: str) -> None:
+    """
+    Unlike deleting a GROUP or removing a MEMBER, an individual
+    expense has no "protect the history" constraint of its own to
+    check first — an expense IS the history; there's nothing beneath
+    it that deleting it would orphan. Any group member can delete an
+    expense (a real, common need: duplicate entry, wrong group,
+    logged by mistake) — deletes the expense along with its splits
+    and comment thread.
+    """
+    result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
+    for row in result.scalars().all():
+        await db.delete(row)
+    result = await db.execute(select(SharedExpenseComment).where(SharedExpenseComment.shared_expense_id == expense_id))
+    for row in result.scalars().all():
+        await db.delete(row)
+    expense = await db.get(SharedExpense, expense_id)
+    if expense is not None:
+        await db.delete(expense)
+    await db.commit()
 
 
 async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
