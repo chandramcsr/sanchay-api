@@ -374,3 +374,90 @@ async def reconnect_by_email(db: AsyncSession, *, new_user: User) -> dict:
     await db.commit()
 
     return {"groups_reconnected": len(reconnected_group_ids), "total_amount": total_amount}
+
+
+# ---------- read/listing functions, backing the API layer ----------
+
+async def get_group(db: AsyncSession, *, group_id: str) -> Group | None:
+    return await db.get(Group, group_id)
+
+
+async def is_group_member(db: AsyncSession, *, group_id: str, user_id: str) -> bool:
+    """
+    Authorization check: can this user see this group's data at all?
+    Used by every group/expense endpoint before returning anything —
+    a group's financial detail should only ever be visible to its
+    own members, never guessable by id alone.
+    """
+    result = await db.execute(
+        select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == user_id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def get_user_groups(db: AsyncSession, *, user_id: str) -> list[Group]:
+    result = await db.execute(
+        select(Group).join(GroupMember, GroupMember.group_id == Group.id).where(GroupMember.user_id == user_id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_group_members(db: AsyncSession, *, group_id: str) -> list[GroupMember]:
+    result = await db.execute(select(GroupMember).where(GroupMember.group_id == group_id))
+    return list(result.scalars().all())
+
+
+async def get_group_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:
+    result = await db.execute(
+        select(SharedExpense).where(SharedExpense.group_id == group_id).order_by(SharedExpense.expense_date.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_expense(db: AsyncSession, *, expense_id: str) -> SharedExpense | None:
+    return await db.get(SharedExpense, expense_id)
+
+
+async def get_expense_splits(db: AsyncSession, *, expense_id: str) -> list[SharedExpenseSplit]:
+    result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
+    return list(result.scalars().all())
+
+
+async def get_expense_comments(db: AsyncSession, *, expense_id: str) -> list[SharedExpenseComment]:
+    result = await db.execute(
+        select(SharedExpenseComment).where(SharedExpenseComment.shared_expense_id == expense_id).order_by(SharedExpenseComment.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
+    """
+    "Who owes me, who do I owe" across every group this user is in.
+    Scoped to currently-LIVE friends only for v1 — a friend whose
+    account has since been deleted (frozen, user_id NULL) won't
+    appear in this summary even though their historical expenses are
+    still visible inside the relevant group's own detail view with
+    "(account deleted)" labels. Showing frozen-friend balances in this
+    top-level summary too is a real, valid gap, tracked as a backlog
+    item rather than folded into this pass — it would need
+    compute_balance() reworked to match by email_ref instead of
+    user_id, a bigger change to an already-tested function.
+    """
+    my_groups = await get_user_groups(db, user_id=user_id)
+    other_user_ids: set[str] = set()
+    for group in my_groups:
+        members = await get_group_members(db, group_id=group.id)
+        for m in members:
+            if m.user_id and m.user_id != user_id:
+                other_user_ids.add(m.user_id)
+
+    balances = []
+    for other_id in other_user_ids:
+        other_user = await db.get(User, other_id)
+        if other_user is None:
+            continue
+        balance = await compute_balance(db, user_a=user_id, user_b=other_id)
+        if balance != Decimal("0.00"):
+            balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance})
+
+    return balances

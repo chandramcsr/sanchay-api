@@ -80,6 +80,19 @@ every frozen row matching that hash and re-populates `user_id` —
 their old shared history becomes live again automatically, without
 this module ever storing or exposing anyone's actual email address.
 
+**The API** (`/api/v1/shared-expenses/...`) is deliberately narrow:
+groups, expenses, comments, settlements, and a balance summary. Two
+design choices worth knowing:
+- Every group/expense-touching endpoint checks membership FIRST and
+  returns 404 (not 403) for a group/expense you're not in —
+  enumeration-safe, same principle already used for login/signup.
+- `BalanceOut` is two separate non-negative fields (`you_owe_them`,
+  `they_owe_you`), never one signed number. A real sign-confusion bug
+  was found and fixed elsewhere in this app (credit card debt counted
+  as an asset instead of a liability) shortly before this API was
+  built — this shape makes the equivalent mistake structurally
+  impossible for whatever reads the response.
+
 ## Stack
 
 - **FastAPI** — genuinely async now, not just async-capable. Every route
