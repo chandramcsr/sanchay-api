@@ -42,6 +42,7 @@ class SharedExpenseSplit(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     shared_expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("shared_expenses.id"), nullable=False, index=True)
     user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     share_amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)

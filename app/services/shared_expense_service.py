@@ -1,6 +1,6 @@
 """
-Shared-expense business logic. Two pieces worth understanding before
-touching this file:
+Shared-expense business logic. Three pieces worth understanding
+before touching this file:
 
 1. SPLITTING MATH uses Decimal throughout, never float — an even
    split of $100 three ways is $33.33/$33.33/$33.34, and float
@@ -12,18 +12,34 @@ touching this file:
    who" actually meaning "arbitrary" — it's still a real, repeatable
    algorithm, just not one that favors any particular participant.
 
-2. THE FREEZE-NOT-CASCADE DELETION POLICY. freeze_user_references()
-   is the one integration point this module expects auth_service to
-   call before deleting a user row — see the docstring on
-   SharedExpenseSplit for the full reasoning. This function is the
-   only thing outside this module that needs to know shared-expenses
-   exists at all, which is deliberate: keeps the coupling to exactly
-   one narrow, well-defined call.
+2. email_ref IS THE DURABLE IDENTITY ANCHOR, user_id IS JUST "WHO'S
+   CURRENTLY ACTIVE". Every user-referencing row in this module
+   stores BOTH: a nullable user_id (the live account link, nulled on
+   deletion) and an email_ref (a SHA-256 hash of the person's
+   normalized email, set once at creation and never changed). The
+   raw email is never stored anywhere in this module — only its
+   hash, via the exact same primitive jwt-library already uses for
+   single-use tokens (hash_token). This is what makes
+   reconnect_by_email() possible: it's a pure lookup by a
+   deterministic value, no PII persisted to make it work.
+
+3. THE FREEZE-NOT-CASCADE DELETION POLICY, AND ITS MIRROR. When
+   someone deletes their account, freeze_user_references() nulls
+   user_id everywhere (keeping email_ref and name_snapshot intact) —
+   the historical record survives, their live account doesn't. If
+   they ever sign up again with the SAME email, reconnect_by_email()
+   (called from auth_service.signup()) finds every frozen row whose
+   email_ref matches and re-populates user_id — their old shared
+   history becomes live and editable again automatically. Together
+   these are the only two integration points this module has with
+   the rest of the app — deliberately narrow, so this stays
+   extractable into its own service later without a rewrite.
 """
 
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from jwt_library import hash_token
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +50,17 @@ from app.models.shared_expense import SharedExpense
 from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
 from app.models.user import User
+
+
+def email_reference(email: str) -> str:
+    """
+    SHA-256 of the normalized (lowercased, trimmed) email — never the
+    raw address itself. Deterministic: the same email always produces
+    the same reference, which is the whole mechanism reconnection
+    relies on, without this module ever needing to store or expose
+    anyone's actual email to other group members.
+    """
+    return hash_token(email.strip().lower())
 
 
 def split_evenly(total: Decimal, participant_ids: list[str]) -> dict[str, Decimal]:
@@ -54,8 +81,6 @@ def split_evenly(total: Decimal, participant_ids: list[str]) -> dict[str, Decima
     base_cents = cents_total // n
     remainder_cents = cents_total - base_cents * n
 
-    # Fractional remainder each participant "lost" to the floor
-    # division — largest remainder gets the extra penny first.
     exact_share = total / n
     remainders = [(pid, exact_share - Decimal(base_cents) / 100) for pid in participant_ids]
     remainders.sort(key=lambda r: r[1], reverse=True)
@@ -75,7 +100,12 @@ async def create_group(db: AsyncSession, *, name: str, created_by: str, member_i
     all_members = set(member_ids) | {created_by}
     for uid in all_members:
         user = await db.get(User, uid)
-        db.add(GroupMember(group_id=group.id, user_id=uid, name_snapshot=user.display_name if user else "Unknown"))
+        db.add(GroupMember(
+            group_id=group.id,
+            user_id=uid,
+            email_ref=email_reference(user.email) if user else "",
+            name_snapshot=user.display_name if user else "Unknown",
+        ))
 
     await db.commit()
     await db.refresh(group)
@@ -96,6 +126,7 @@ async def create_shared_expense(
     expense = SharedExpense(
         group_id=group_id,
         paid_by=paid_by,
+        paid_by_email_ref=email_reference(payer.email) if payer else "",
         paid_by_name_snapshot=payer.display_name if payer else "Unknown",
         description=description,
         amount=amount,
@@ -110,6 +141,7 @@ async def create_shared_expense(
         db.add(SharedExpenseSplit(
             shared_expense_id=expense.id,
             user_id=uid,
+            email_ref=email_reference(participant.email) if participant else "",
             name_snapshot=participant.display_name if participant else "Unknown",
             share_amount=share,
         ))
@@ -145,7 +177,6 @@ async def edit_shared_expense(
         changes.append(f"amount from ${expense.amount:.2f} to ${new_amount:.2f}")
         expense.amount = new_amount
 
-        # Re-split proportionally to whoever was already in it.
         result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense_id))
         splits = list(result.scalars().all())
         participant_ids = [s.user_id for s in splits if s.user_id is not None]
@@ -162,6 +193,7 @@ async def edit_shared_expense(
         db.add(SharedExpenseComment(
             shared_expense_id=expense_id,
             user_id=edited_by,
+            email_ref=email_reference(editor.email) if editor else "",
             name_snapshot=editor_name,
             body=f"{editor_name} changed {' and '.join(changes)}.",
             is_system=True,
@@ -178,6 +210,7 @@ async def add_comment(db: AsyncSession, *, expense_id: str, user_id: str, body: 
     comment = SharedExpenseComment(
         shared_expense_id=expense_id,
         user_id=user_id,
+        email_ref=email_reference(user.email) if user else "",
         name_snapshot=user.display_name if user else "Unknown",
         body=body,
         is_system=False,
@@ -195,8 +228,10 @@ async def record_settlement(
     to_user = await db.get(User, to_user_id)
     settlement = Settlement(
         from_user_id=from_user_id,
+        from_email_ref=email_reference(from_user.email) if from_user else "",
         from_name_snapshot=from_user.display_name if from_user else "Unknown",
         to_user_id=to_user_id,
+        to_email_ref=email_reference(to_user.email) if to_user else "",
         to_name_snapshot=to_user.display_name if to_user else "Unknown",
         amount=amount,
         settled_date=settled_date,
@@ -216,7 +251,6 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     """
     balance = Decimal("0.00")
 
-    # Expenses B paid where A had a share -> A owes B that share.
     result = await db.execute(
         select(SharedExpenseSplit, SharedExpense)
         .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
@@ -225,7 +259,6 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     for split, _expense in result.all():
         balance += split.share_amount
 
-    # Expenses A paid where B had a share -> B owes A that share (negative from A's view).
     result = await db.execute(
         select(SharedExpenseSplit, SharedExpense)
         .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
@@ -234,7 +267,6 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     for split, _expense in result.all():
         balance -= split.share_amount
 
-    # Settlements reduce whatever's owed in the direction they were paid.
     result = await db.execute(
         select(Settlement).where(Settlement.from_user_id == user_a, Settlement.to_user_id == user_b)
     )
@@ -253,11 +285,11 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
 async def freeze_user_references(db: AsyncSession, *, user_id: str) -> None:
     """
     Called by auth_service.delete_account() BEFORE the user row is
-    deleted. Snapshots the person's current display name onto every
-    shared-expense record they're part of, then nulls out the user_id
-    reference — the historical record survives as "Name (account
-    deleted)"; their actual account does not. See
-    SharedExpenseSplit's docstring for the full policy reasoning.
+    deleted. Refreshes name_snapshot to the person's current display
+    name, then nulls user_id — email_ref is untouched (it was already
+    set correctly at creation time and never needs to change). The
+    historical record survives as "Name (account deleted)"; their
+    actual account does not.
     """
     user = await db.get(User, user_id)
     name = user.display_name if user else "Unknown"
@@ -297,3 +329,48 @@ async def freeze_user_references(db: AsyncSession, *, user_id: str) -> None:
                 s.to_user_id = None
 
     await db.commit()
+
+
+async def reconnect_by_email(db: AsyncSession, *, new_user: User) -> dict:
+    """
+    Called by auth_service.signup() right after a new user is
+    created. Finds every frozen row (user_id IS NULL) whose email_ref
+    matches this signup's email, and re-populates user_id — the
+    person's old shared-expense history becomes live again
+    automatically. Returns a summary so the caller can decide whether
+    to surface a "welcome back, reconnecting your history" notice
+    (only non-empty if something was actually found).
+    """
+    ref = email_reference(new_user.email)
+    reconnected_group_ids: set[str] = set()
+    total_amount = Decimal("0.00")
+
+    result = await db.execute(select(GroupMember).where(GroupMember.email_ref == ref, GroupMember.user_id.is_(None)))
+    for row in result.scalars().all():
+        row.user_id = new_user.id
+        reconnected_group_ids.add(row.group_id)
+
+    result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.email_ref == ref, SharedExpenseSplit.user_id.is_(None)))
+    for row in result.scalars().all():
+        row.user_id = new_user.id
+        total_amount += row.share_amount
+
+    result = await db.execute(select(SharedExpenseComment).where(SharedExpenseComment.email_ref == ref, SharedExpenseComment.user_id.is_(None)))
+    for row in result.scalars().all():
+        row.user_id = new_user.id
+
+    result = await db.execute(select(SharedExpense).where(SharedExpense.paid_by_email_ref == ref, SharedExpense.paid_by.is_(None)))
+    for row in result.scalars().all():
+        row.paid_by = new_user.id
+
+    result = await db.execute(select(Settlement).where(Settlement.from_email_ref == ref, Settlement.from_user_id.is_(None)))
+    for row in result.scalars().all():
+        row.from_user_id = new_user.id
+
+    result = await db.execute(select(Settlement).where(Settlement.to_email_ref == ref, Settlement.to_user_id.is_(None)))
+    for row in result.scalars().all():
+        row.to_user_id = new_user.id
+
+    await db.commit()
+
+    return {"groups_reconnected": len(reconnected_group_ids), "total_amount": total_amount}

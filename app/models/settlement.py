@@ -30,8 +30,10 @@ class Settlement(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     from_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    from_email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     from_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     to_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    to_email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     to_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     settled_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD

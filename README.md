@@ -69,6 +69,17 @@ float, and the largest-remainder method — $100 split 3 ways is
 $33.33/$33.33/$33.34, deterministic, always summing exactly to the
 total.
 
+**Reconnection**: every user-referencing row stores both a nullable
+`user_id` (the live account link) and an `email_ref` — a SHA-256 hash
+of the person's normalized email, reusing `jwt-library`'s existing
+token-hashing primitive. `user_id` is "who's currently active,"
+nulled on deletion; `email_ref` is the durable identity anchor that
+never changes. If someone signs up again with the same email,
+`reconnect_by_email()` (called from `auth_service.signup()`) finds
+every frozen row matching that hash and re-populates `user_id` —
+their old shared history becomes live again automatically, without
+this module ever storing or exposing anyone's actual email address.
+
 ## Stack
 
 - **FastAPI** — genuinely async now, not just async-capable. Every route

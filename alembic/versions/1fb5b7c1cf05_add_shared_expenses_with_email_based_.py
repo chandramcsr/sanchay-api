@@ -1,15 +1,15 @@
-"""add shared expenses (groups, splits, comments, settlements)
+"""add shared expenses with email-based reconnection
 
-Revision ID: 435c84e5f75d
+Revision ID: 1fb5b7c1cf05
 Revises: d7fa8ecc0d2f
-Create Date: 2026-07-10 00:19:40.757006
+Create Date: 2026-07-10 00:42:54.374481
 
 """
 from alembic import op
 import sqlalchemy as sa
 
 
-revision = '435c84e5f75d'
+revision = '1fb5b7c1cf05'
 down_revision = 'd7fa8ecc0d2f'
 branch_labels = None
 depends_on = None
@@ -20,14 +20,18 @@ def upgrade() -> None:
     op.create_table('settlements',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('from_user_id', sa.String(length=36), nullable=True),
+    sa.Column('from_email_ref', sa.String(length=64), nullable=False),
     sa.Column('from_name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('to_user_id', sa.String(length=36), nullable=True),
+    sa.Column('to_email_ref', sa.String(length=64), nullable=False),
     sa.Column('to_name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('amount', sa.Numeric(precision=12, scale=2), nullable=False),
     sa.Column('settled_date', sa.String(length=10), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_settlements_from_email_ref'), 'settlements', ['from_email_ref'], unique=False)
+    op.create_index(op.f('ix_settlements_to_email_ref'), 'settlements', ['to_email_ref'], unique=False)
     op.create_table('groups',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('name', sa.String(length=200), nullable=False),
@@ -40,18 +44,21 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('group_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=True),
+    sa.Column('email_ref', sa.String(length=64), nullable=False),
     sa.Column('name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('joined_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['group_id'], ['groups.id'], ),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('group_id', 'user_id', name='uq_group_member')
     )
+    op.create_index(op.f('ix_group_members_email_ref'), 'group_members', ['email_ref'], unique=False)
     op.create_index(op.f('ix_group_members_group_id'), 'group_members', ['group_id'], unique=False)
     op.create_index(op.f('ix_group_members_user_id'), 'group_members', ['user_id'], unique=False)
     op.create_table('shared_expenses',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('group_id', sa.String(length=36), nullable=False),
     sa.Column('paid_by', sa.String(length=36), nullable=True),
+    sa.Column('paid_by_email_ref', sa.String(length=64), nullable=False),
     sa.Column('paid_by_name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('description', sa.String(length=500), nullable=False),
     sa.Column('amount', sa.Numeric(precision=12, scale=2), nullable=False),
@@ -63,10 +70,12 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_shared_expenses_group_id'), 'shared_expenses', ['group_id'], unique=False)
+    op.create_index(op.f('ix_shared_expenses_paid_by_email_ref'), 'shared_expenses', ['paid_by_email_ref'], unique=False)
     op.create_table('shared_expense_comments',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('shared_expense_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=True),
+    sa.Column('email_ref', sa.String(length=64), nullable=False),
     sa.Column('name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('body', sa.Text(), nullable=False),
     sa.Column('is_system', sa.Boolean(), nullable=False),
@@ -74,17 +83,20 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['shared_expense_id'], ['shared_expenses.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_shared_expense_comments_email_ref'), 'shared_expense_comments', ['email_ref'], unique=False)
     op.create_index(op.f('ix_shared_expense_comments_shared_expense_id'), 'shared_expense_comments', ['shared_expense_id'], unique=False)
     op.create_table('shared_expense_splits',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('shared_expense_id', sa.String(length=36), nullable=False),
     sa.Column('user_id', sa.String(length=36), nullable=True),
+    sa.Column('email_ref', sa.String(length=64), nullable=False),
     sa.Column('name_snapshot', sa.String(length=200), nullable=False),
     sa.Column('share_amount', sa.Numeric(precision=12, scale=2), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['shared_expense_id'], ['shared_expenses.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_shared_expense_splits_email_ref'), 'shared_expense_splits', ['email_ref'], unique=False)
     op.create_index(op.f('ix_shared_expense_splits_shared_expense_id'), 'shared_expense_splits', ['shared_expense_id'], unique=False)
     op.create_index(op.f('ix_shared_expense_splits_user_id'), 'shared_expense_splits', ['user_id'], unique=False)
     # ### end Alembic commands ###
@@ -94,14 +106,20 @@ def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
     op.drop_index(op.f('ix_shared_expense_splits_user_id'), table_name='shared_expense_splits')
     op.drop_index(op.f('ix_shared_expense_splits_shared_expense_id'), table_name='shared_expense_splits')
+    op.drop_index(op.f('ix_shared_expense_splits_email_ref'), table_name='shared_expense_splits')
     op.drop_table('shared_expense_splits')
     op.drop_index(op.f('ix_shared_expense_comments_shared_expense_id'), table_name='shared_expense_comments')
+    op.drop_index(op.f('ix_shared_expense_comments_email_ref'), table_name='shared_expense_comments')
     op.drop_table('shared_expense_comments')
+    op.drop_index(op.f('ix_shared_expenses_paid_by_email_ref'), table_name='shared_expenses')
     op.drop_index(op.f('ix_shared_expenses_group_id'), table_name='shared_expenses')
     op.drop_table('shared_expenses')
     op.drop_index(op.f('ix_group_members_user_id'), table_name='group_members')
     op.drop_index(op.f('ix_group_members_group_id'), table_name='group_members')
+    op.drop_index(op.f('ix_group_members_email_ref'), table_name='group_members')
     op.drop_table('group_members')
     op.drop_table('groups')
+    op.drop_index(op.f('ix_settlements_to_email_ref'), table_name='settlements')
+    op.drop_index(op.f('ix_settlements_from_email_ref'), table_name='settlements')
     op.drop_table('settlements')
     # ### end Alembic commands ###

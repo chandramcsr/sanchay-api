@@ -10,6 +10,7 @@ from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginEventOut,
     LoginRequest,
+    ReconnectedHistory,
     RefreshRequest,
     ResetPasswordRequest,
     SignupRequest,
@@ -27,10 +28,20 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def signup(
     request: Request, payload: SignupRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
 ) -> TokenResponse:
-    access_token, refresh_token, user = await auth_service.signup(
+    access_token, refresh_token, user, reconnect_summary = await auth_service.signup(
         db, background_tasks, email=payload.email, password=payload.password, display_name=payload.display_name
     )
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=UserOut.model_validate(user))
+    reconnected_history = (
+        ReconnectedHistory(groups_reconnected=reconnect_summary["groups_reconnected"], total_amount=str(reconnect_summary["total_amount"]))
+        if reconnect_summary["groups_reconnected"] > 0
+        else None
+    )
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserOut.model_validate(user),
+        reconnected_history=reconnected_history,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)

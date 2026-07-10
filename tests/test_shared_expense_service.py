@@ -202,3 +202,103 @@ async def test_delete_account_freezes_shared_expense_history_instead_of_destroyi
     # And Bob's actual account is genuinely gone.
     from app.repositories import user_repository
     assert await user_repository.get_by_id(db_session, bob.id) is None
+
+
+# ---------- email-based reconnection ----------
+
+async def test_signing_up_again_with_the_same_email_reconnects_frozen_history(db_session):
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    alice, bob = await _make_users(db_session, "9")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    bob_email = bob.email
+    await auth_service.delete_account(db_session, current_user=bob, password="hunter2222")
+
+    # Confirm it's genuinely frozen first.
+    result = await db_session.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.name_snapshot == "Bob"))
+    assert result.scalar_one().user_id is None
+
+    # Bob signs up again with the SAME email.
+    _, _, new_bob, reconnect_summary = await auth_service.signup(
+        db_session, BackgroundTasks(), email=bob_email, password="newpassword1", display_name="Bob"
+    )
+
+    assert reconnect_summary["groups_reconnected"] == 1
+    assert reconnect_summary["total_amount"] == Decimal("50.00")
+
+    result = await db_session.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.name_snapshot == "Bob"))
+    reconnected_split = result.scalar_one()
+    assert reconnected_split.user_id == new_bob.id  # relinked to the NEW account
+
+    # And the balance is live and correct again, computed against the new user id.
+    balance = await compute_balance(db_session, user_a=new_bob.id, user_b=alice.id)
+    assert balance == Decimal("50.00")
+
+
+async def test_signing_up_with_a_different_email_reconnects_nothing(db_session):
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    alice, bob = await _make_users(db_session, "10")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await auth_service.delete_account(db_session, current_user=bob, password="hunter2222")
+
+    # A completely unrelated signup must not pick up Bob's frozen history.
+    _, _, _stranger, reconnect_summary = await auth_service.signup(
+        db_session, BackgroundTasks(), email="totally-unrelated@example.com", password="hunter2222", display_name="Stranger"
+    )
+    assert reconnect_summary["groups_reconnected"] == 0
+    assert reconnect_summary["total_amount"] == Decimal("0.00")
+
+
+async def test_a_brand_new_signup_with_no_prior_history_reconnects_nothing(db_session):
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    _, _, _user, reconnect_summary = await auth_service.signup(
+        db_session, BackgroundTasks(), email="brand-new-11@example.com", password="hunter2222", display_name="New"
+    )
+    assert reconnect_summary["groups_reconnected"] == 0
+    assert reconnect_summary["total_amount"] == Decimal("0.00")
+
+
+async def test_reconnection_is_visible_in_the_real_signup_api_response(client):
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    # Set up frozen history using the service layer directly (simpler
+    # than going through the full HTTP group-creation flow, which
+    # doesn't exist yet — phase 2). Uses the SAME db the client's
+    # overridden get_db() resolves to, per this test's fixtures.
+    from tests.conftest import TestingSessionLocal
+    async with TestingSessionLocal() as db:
+        alice, bob = await _make_users(db, "12")
+        group = await create_group(db, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+        await create_shared_expense(
+            db, group_id=group.id, paid_by=alice.id, description="Dinner",
+            amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+        )
+        bob_email = bob.email
+        await auth_service.delete_account(db, current_user=bob, password="hunter2222")
+
+    r = await client.post("/api/v1/auth/signup", json={"email": bob_email, "password": "newpassword1", "display_name": "Bob"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["reconnected_history"] is not None
+    assert body["reconnected_history"]["groups_reconnected"] == 1
+    assert body["reconnected_history"]["total_amount"] == "50.00"
+
+
+async def test_normal_signup_has_no_reconnected_history_field_populated(client):
+    r = await client.post("/api/v1/auth/signup", json={"email": "nothing-special@example.com", "password": "hunter2222", "display_name": "Plain"})
+    assert r.status_code == 201
+    assert r.json()["reconnected_history"] is None

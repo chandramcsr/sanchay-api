@@ -34,6 +34,7 @@ class SharedExpenseComment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     shared_expense_id: Mapped[str] = mapped_column(String(36), ForeignKey("shared_expenses.id"), nullable=False, index=True)
     user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

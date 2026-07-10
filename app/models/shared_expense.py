@@ -31,6 +31,7 @@ class SharedExpense(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"), nullable=False, index=True)
     paid_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    paid_by_email_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     paid_by_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

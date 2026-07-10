@@ -35,7 +35,7 @@ from app.repositories import (
     user_repository,
 )
 from app.repositories import encrypted_ledger_repository
-from app.services.shared_expense_service import freeze_user_references
+from app.services.shared_expense_service import freeze_user_references, reconnect_by_email
 
 
 async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
@@ -60,7 +60,7 @@ async def _issue_token_pair(db: AsyncSession, user: User) -> tuple[str, str]:
 
 async def signup(
     db: AsyncSession, background_tasks: BackgroundTasks, *, email: str, password: str, display_name: str
-) -> tuple[str, str, User]:
+) -> tuple[str, str, User, dict]:
     normalized_email = email.lower()
     if await user_repository.get_by_email(db, normalized_email):
         # Deliberately vague — confirming an email is NOT registered is
@@ -72,6 +72,12 @@ async def signup(
     await db.commit()
     await db.refresh(user)
 
+    # If this email has frozen shared-expense history (they deleted a
+    # previous account and are signing up again with the same
+    # address), reconnect it now — see shared_expense_service for the
+    # full email_ref/freeze/reconnect design.
+    reconnect_summary = await reconnect_by_email(db, new_user=user)
+
     # Best-effort — verification is a soft nudge, not a gate. Sent as a
     # background task so the response returns the moment the account
     # exists, not after waiting on Resend's API.
@@ -82,7 +88,7 @@ async def signup(
     background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
     access_token, refresh_token = await _issue_token_pair(db, user)
-    return access_token, refresh_token, user
+    return access_token, refresh_token, user, reconnect_summary
 
 
 async def login(db: AsyncSession, request: Request, *, email: str, password: str) -> tuple[str, str, User]:

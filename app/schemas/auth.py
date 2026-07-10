@@ -80,11 +80,17 @@ class LoginEventOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ReconnectedHistory(BaseModel):
+    groups_reconnected: int
+    total_amount: str  # formatted as a decimal string, not float — this is money
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
     user: UserOut
+    reconnected_history: ReconnectedHistory | None = None  # only ever populated by signup
 
 
 class RefreshRequest(BaseModel):
