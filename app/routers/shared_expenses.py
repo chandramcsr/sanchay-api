@@ -347,6 +347,7 @@ async def edit_expense(
     updated = await svc.edit_shared_expense(
         db, expense_id=expense_id, edited_by=current_user.id,
         new_amount=new_amount, new_description=payload.description, new_category=payload.category,
+        new_expense_date=payload.expense_date,
         new_participant_ids=payload.participant_ids,
         new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
     )

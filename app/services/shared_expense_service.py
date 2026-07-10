@@ -325,6 +325,7 @@ async def edit_shared_expense(
     new_amount: Decimal | None = None,
     new_description: str | None = None,
     new_category: str | None = None,
+    new_expense_date: str | None = None,
     new_participant_ids: list[str] | None = None,
     new_pending_participants: list[dict] | None = None,
 ) -> SharedExpense:
@@ -395,6 +396,10 @@ async def edit_shared_expense(
     if new_category is not None and new_category != expense.category:
         changes.append(f'category to "{new_category}"')
         expense.category = new_category
+
+    if new_expense_date is not None and new_expense_date != expense.expense_date:
+        changes.append(f"date to {new_expense_date}")
+        expense.expense_date = new_expense_date
 
     if changes:
         db.add(SharedExpenseComment(

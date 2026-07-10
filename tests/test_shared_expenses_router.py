@@ -843,3 +843,21 @@ async def test_editing_amount_only_does_not_change_a_pending_participants_email_
     sam_token = signup_resp.json()["access_token"]
     balances = await client.get("/api/v1/shared-expenses/balances", headers=_auth(sam_token))
     assert balances.json()[0]["you_owe_them"] == "30.00"  # half of the EDITED $60, reconnection worked
+
+
+async def test_edit_expense_date(client):
+    alice_token, alice_id = await _signup(client, "alice-date1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"expense_date": "2026-07-02"})
+    assert r.status_code == 200
+    assert r.json()["expense_date"] == "2026-07-02"
+
+    comments = await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}/comments", headers=_auth(alice_token))
+    assert "2026-07-02" in comments.json()[0]["body"]  # logged as visible history, same as any other edit
