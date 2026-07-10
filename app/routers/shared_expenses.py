@@ -76,11 +76,11 @@ async def create_group(
     db: AsyncSession = Depends(get_db),
 ) -> GroupOut:
     member_ids = []
-    pending_emails = []
-    for email in payload.member_emails:
-        user = await user_repository.get_by_email(db, email.lower())
+    pending = []
+    for m in payload.members:
+        user = await user_repository.get_by_email(db, m.email.lower())
         if user is None:
-            pending_emails.append(email)
+            pending.append(m)
         else:
             member_ids.append(user.id)
 
@@ -89,9 +89,9 @@ async def create_group(
     # Invites are queued AFTER the group exists — each one needs a
     # real group_id to attach to, and the group's own name for the
     # invite email's subject line.
-    for email in pending_emails:
+    for m in pending:
         await svc.create_pending_invite(
-            db, background_tasks, group_id=group.id, email=email, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
+            db, background_tasks, group_id=group.id, email=m.email, name=m.name, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
         )
 
     return await _group_to_out(db, group)
@@ -138,9 +138,10 @@ async def add_group_member(
     user = await user_repository.get_by_email(db, payload.email.lower())
     if user is not None:
         await svc.add_member_to_group(db, group_id=group_id, user_id=user.id)
-    elif not await svc.has_pending_invite(db, group_id=group_id, email=payload.email):
-        await svc.create_pending_invite(
-            db, background_tasks, group_id=group_id, email=payload.email, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
+    else:
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=group_id, email=payload.email, name=payload.name,
+            invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url,
         )
 
     return await _group_to_out(db, group)
@@ -200,6 +201,7 @@ def _expense_to_out(expense, splits) -> SharedExpenseOut:
 async def create_expense(
     group_id: str,
     payload: SharedExpenseCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SharedExpenseOut:
@@ -210,6 +212,19 @@ async def create_expense(
     if invalid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="All participants must be members of this group")
 
+    group = await svc.get_group(db, group_id=group_id)
+
+    # A pending participant doesn't need to already be a member (or
+    # even already invited) to this group — splitting an expense with
+    # someone new invites them on the spot, same as adding them
+    # directly. ensure_pending_invite is a no-op if they're already
+    # pending for this group (no duplicate row, no second email).
+    for p in payload.pending_participants:
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=group_id, email=p.email, name=p.name,
+            invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+        )
+
     expense = await svc.create_shared_expense(
         db,
         group_id=group_id,
@@ -218,6 +233,7 @@ async def create_expense(
         amount=_to_decimal(payload.amount, "amount"),
         expense_date=payload.expense_date,
         participant_ids=payload.participant_ids,
+        pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants],
         category=payload.category,
     )
     splits = await svc.get_expense_splits(db, expense_id=expense.id)

@@ -5,9 +5,23 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # ---------- groups ----------
 
+class MemberInvite(BaseModel):
+    """
+    email is always required. name is only actually USED if this
+    email turns out to have no Sanchay account yet (an existing
+    account's own real display name is used instead) — but asking for
+    it upfront, every time, means a not-yet-registered person is
+    never just a bare email address anywhere in the app; "Sam" shows
+    up instead of "sam.usajobs@gmail.com" the moment they're added,
+    not after they eventually sign up.
+    """
+    email: EmailStr
+    name: str = ""
+
+
 class GroupCreateRequest(BaseModel):
     name: str
-    member_emails: list[EmailStr] = Field(default_factory=list)
+    members: list[MemberInvite] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -18,8 +32,8 @@ class GroupCreateRequest(BaseModel):
         return v
 
 
-class AddMemberRequest(BaseModel):
-    email: EmailStr
+class AddMemberRequest(MemberInvite):
+    pass
 
 
 class GroupRenameRequest(BaseModel):
@@ -39,11 +53,16 @@ class GroupMemberOut(BaseModel):
     name: str  # never the member's email — no group member ever sees another's email address
 
 
+class PendingInviteOut(BaseModel):
+    name: str
+    email: str
+
+
 class GroupOut(BaseModel):
     id: str
     name: str
     members: list[GroupMemberOut]
-    pending_invites: list[str]  # emails of people invited but who haven't signed up yet
+    pending_invites: list[PendingInviteOut]  # people invited but who haven't signed up yet
     created_at: datetime
 
 
@@ -53,7 +72,8 @@ class SharedExpenseCreateRequest(BaseModel):
     description: str
     amount: float = Field(gt=0)
     expense_date: str  # YYYY-MM-DD
-    participant_ids: list[str] = Field(min_length=1)
+    participant_ids: list[str] = Field(default_factory=list)
+    pending_participants: list[MemberInvite] = Field(default_factory=list)
     category: str = "Other"
 
     @field_validator("description")
@@ -62,6 +82,16 @@ class SharedExpenseCreateRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("Description is required")
+        return v
+
+    @field_validator("pending_participants")
+    @classmethod
+    def at_least_one_participant_somewhere(cls, v, info):
+        # participant_ids is validated first (field order above), so
+        # info.data has it available here to check the COMBINED total
+        # rather than requiring either list alone to be non-empty.
+        if not v and not info.data.get("participant_ids"):
+            raise ValueError("At least one participant is required")
         return v
 
 

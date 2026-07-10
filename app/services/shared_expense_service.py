@@ -147,8 +147,29 @@ async def create_shared_expense(
     amount: Decimal,
     expense_date: str,
     participant_ids: list[str],
+    pending_participants: list[dict] | None = None,
     category: str = "Other",
 ) -> SharedExpense:
+    """
+    pending_participants is a list of {"email": str, "name": str} for
+    people who don't have a Sanchay account yet — splitting an
+    expense with someone you haven't fully onboarded is a real, common
+    case (you log the dinner the night it happens; your friend signs
+    up for the app whenever they get around to it). The router is
+    responsible for ensuring a PendingGroupInvite already exists for
+    each of these (creating + emailing one if not) before calling
+    this — this function only builds the split.
+
+    The split row for a pending participant looks EXACTLY like a
+    frozen (deleted-account) split already does: user_id=None,
+    email_ref set, name_snapshot set. That's deliberate, not a
+    shortcut — it means reconnect_by_email() (built for the
+    delete-account-then-resignup case) already, for free, reattaches
+    this split the moment this person actually signs up with that
+    email. No new reconciliation logic needed for that half of the
+    feature; the existing architecture already generalizes to "never
+    had an account yet" as well as "had one, deleted it."
+    """
     payer = await db.get(User, paid_by)
     expense = SharedExpense(
         group_id=group_id,
@@ -163,16 +184,36 @@ async def create_shared_expense(
     db.add(expense)
     await db.flush()
 
-    shares = split_evenly(amount, participant_ids)
-    for uid, share in shares.items():
-        participant = await db.get(User, uid)
-        db.add(SharedExpenseSplit(
-            shared_expense_id=expense.id,
-            user_id=uid,
-            email_ref=email_reference(participant.email) if participant else "",
-            name_snapshot=participant.display_name if participant else "Unknown",
-            share_amount=share,
-        ))
+    # Build one unified list of participant keys so the split math
+    # (and its sum-equals-total guarantee) runs over everyone at once
+    # — a real user's id, or a pending participant's normalized email
+    # (a string just as good as a key; split_evenly only cares that
+    # keys are distinct and stable, not what they mean).
+    pending = pending_participants or []
+    all_keys = list(participant_ids) + [p["email"].strip().lower() for p in pending]
+    shares = split_evenly(amount, all_keys)
+
+    pending_by_key = {p["email"].strip().lower(): p for p in pending}
+
+    for key, share in shares.items():
+        if key in pending_by_key:
+            p = pending_by_key[key]
+            db.add(SharedExpenseSplit(
+                shared_expense_id=expense.id,
+                user_id=None,
+                email_ref=email_reference(p["email"]),
+                name_snapshot=p["name"],
+                share_amount=share,
+            ))
+        else:
+            participant = await db.get(User, key)
+            db.add(SharedExpenseSplit(
+                shared_expense_id=expense.id,
+                user_id=key,
+                email_ref=email_reference(participant.email) if participant else "",
+                name_snapshot=participant.display_name if participant else "Unknown",
+                share_amount=share,
+            ))
 
     await db.commit()
     await db.refresh(expense)
@@ -440,9 +481,9 @@ async def get_group_members(db: AsyncSession, *, group_id: str) -> list[GroupMem
     return list(result.scalars().all())
 
 
-async def get_group_pending_invites(db: AsyncSession, *, group_id: str) -> list[str]:
-    result = await db.execute(select(PendingGroupInvite.email).where(PendingGroupInvite.group_id == group_id))
-    return [row[0] for row in result.all()]
+async def get_group_pending_invites(db: AsyncSession, *, group_id: str) -> list[dict]:
+    result = await db.execute(select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id))
+    return [{"name": inv.name, "email": inv.email} for inv in result.scalars().all()]
 
 
 async def has_pending_invite(db: AsyncSession, *, group_id: str, email: str) -> bool:
@@ -450,6 +491,32 @@ async def has_pending_invite(db: AsyncSession, *, group_id: str, email: str) -> 
         select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id, PendingGroupInvite.email == email.strip().lower())
     )
     return result.scalar_one_or_none() is not None
+
+
+async def ensure_pending_invite(
+    db: AsyncSession,
+    background_tasks: BackgroundTasks,
+    *,
+    group_id: str,
+    email: str,
+    name: str,
+    invited_by: str,
+    group_name: str,
+    frontend_url: str,
+) -> None:
+    """
+    The check-then-create pattern shared by every place someone can
+    end up invited to a group without a Sanchay account yet: creating
+    a group with unknown emails, adding a member later, and now
+    splitting an expense with someone who isn't a member (or even
+    invited) yet. Deliberately a no-op (no duplicate row, no second
+    email) if this exact email is already pending for this group.
+    """
+    if not await has_pending_invite(db, group_id=group_id, email=email):
+        await create_pending_invite(
+            db, background_tasks, group_id=group_id, email=email, name=name,
+            invited_by=invited_by, group_name=group_name, frontend_url=frontend_url,
+        )
 
 
 async def get_group_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:
@@ -516,6 +583,7 @@ async def create_pending_invite(
     *,
     group_id: str,
     email: str,
+    name: str = "",
     invited_by: str,
     group_name: str,
     frontend_url: str,
@@ -535,10 +603,17 @@ async def create_pending_invite(
     never-learns-about-it risk on a failed send is real but bounded:
     the group's creator can see the pending invite in the group view
     and chase them manually.
+
+    name is what the group actually sees for this person before they
+    sign up — "Sam" instead of a raw email address, matching how a
+    real friend/roommate would be added anywhere else. Falls back to
+    the email's local part (before the @) if nothing was given, which
+    still beats displaying the whole address.
     """
     normalized = email.strip().lower()
+    display_name = name.strip() or normalized.split("@")[0]
     inviter = await db.get(User, invited_by)
-    db.add(PendingGroupInvite(group_id=group_id, email=normalized, invited_by=invited_by))
+    db.add(PendingGroupInvite(group_id=group_id, email=normalized, name=display_name, invited_by=invited_by))
     await db.commit()
 
     signup_link = frontend_url.rstrip("/") + "/"  # signup is the app's normal entry point, no special invite token needed — matching by email is what makes this work

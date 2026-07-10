@@ -32,5 +32,6 @@ class PendingGroupInvite(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     group_id: Mapped[str] = mapped_column(String(36), ForeignKey("groups.id"), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)  # normalized lowercase
+    name: Mapped[str] = mapped_column(String(200), nullable=False, server_default="")
     invited_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
