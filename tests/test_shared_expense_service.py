@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from app.core.security import hash_password
+from app.models.group_member import GroupMember
 from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
 from app.models.user import User
@@ -12,6 +13,7 @@ from app.services.shared_expense_service import (
     create_group,
     create_shared_expense,
     edit_shared_expense,
+    ensure_pending_invite,
     freeze_user_references,
     record_settlement,
     split_evenly,
@@ -302,3 +304,77 @@ async def test_normal_signup_has_no_reconnected_history_field_populated(client):
     r = await client.post("/api/v1/auth/signup", json={"email": "nothing-special@example.com", "password": "hunter2222", "display_name": "Plain"})
     assert r.status_code == 201
     assert r.json()["reconnected_history"] is None
+
+
+async def test_reconnection_updates_the_name_to_the_real_signup_name_not_the_frozen_one(db_session):
+    """
+    The real bug this guards against: Bob's account is frozen with
+    name_snapshot="Bob", but he signs back up as "Robert" (people
+    change how they present their name all the time). Every reconnected
+    row must show "Robert" now, consistently -- not stay frozen at
+    "Bob" while OTHER reconnected data (like group membership) shows
+    "Robert", which was the actual inconsistency reported.
+    """
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    alice, bob = await _make_users(db_session, "13")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    bob_email = bob.email
+    await auth_service.delete_account(db_session, current_user=bob, password="hunter2222")
+
+    _, _, new_bob, _reconnect, _joined = await auth_service.signup(
+        db_session, BackgroundTasks(), email=bob_email, password="newpassword1", display_name="Robert"
+    )
+
+    result = await db_session.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.user_id == new_bob.id))
+    split = result.scalar_one()
+    assert split.name_snapshot == "Robert"  # the REAL current name, not frozen "Bob"
+
+    result = await db_session.execute(select(GroupMember).where(GroupMember.user_id == new_bob.id))
+    member = result.scalar_one()
+    assert member.name_snapshot == "Robert"  # consistent with the split above -- this was the actual bug
+
+
+async def test_a_pending_invite_name_is_replaced_by_the_real_signup_name_consistently(db_session):
+    """
+    Same consistency guarantee, for the OTHER path into this
+    mechanism: someone invited by name (before having any account at
+    all) who then signs up with a different name than whoever invited
+    them typed in. The invite name was only ever a placeholder.
+    """
+    from app.services import auth_service
+    from fastapi import BackgroundTasks
+
+    alice, _bob_unused = await _make_users(db_session, "14")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[])
+    # The router normally calls ensure_pending_invite before
+    # create_shared_expense — calling the service function directly
+    # here, so setting that up explicitly rather than going through
+    # the HTTP layer for this test.
+    await ensure_pending_invite(
+        db_session, BackgroundTasks(), group_id=group.id, email="sam-recon14@example.com", name="Sammy",
+        invited_by=alice.id, group_name=group.name, frontend_url="https://example.com",
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "sam-recon14@example.com", "name": "Sammy"}],
+    )
+
+    _, _, sam, _reconnect, joined = await auth_service.signup(
+        db_session, BackgroundTasks(), email="sam-recon14@example.com", password="hunter2222", display_name="Samuel"
+    )
+    assert joined == ["Roommates"]
+
+    result = await db_session.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.user_id == sam.id))
+    split = result.scalar_one()
+    assert split.name_snapshot == "Samuel"  # the real signup name, not the invite-time "Sammy"
+
+    result = await db_session.execute(select(GroupMember).where(GroupMember.user_id == sam.id))
+    member = result.scalar_one()
+    assert member.name_snapshot == "Samuel"  # consistent with the split

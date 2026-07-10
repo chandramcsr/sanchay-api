@@ -414,36 +414,56 @@ async def reconnect_by_email(db: AsyncSession, *, new_user: User) -> dict:
     automatically. Returns a summary so the caller can decide whether
     to surface a "welcome back, reconnecting your history" notice
     (only non-empty if something was actually found).
+
+    Also updates every name_snapshot to the new user's REAL account
+    display name — not the name that happened to be captured at
+    invite time (or whatever name they had before deleting a prior
+    account). Deliberate, and fixes a real inconsistency this was
+    found to have: without this, join_pending_invites (which creates
+    the GroupMember row) already used the new signup name, but this
+    function left every expense split/comment/settlement showing the
+    OLD name — the same person would show up under two different
+    names in the same group depending on which screen you looked at.
+    Once someone has a real account, their name is their name,
+    consistently, everywhere — not frozen at whatever it was when
+    someone else typed it into an invite form.
     """
     ref = email_reference(new_user.email)
     reconnected_group_ids: set[str] = set()
     total_amount = Decimal("0.00")
+    name = new_user.display_name
 
     result = await db.execute(select(GroupMember).where(GroupMember.email_ref == ref, GroupMember.user_id.is_(None)))
     for row in result.scalars().all():
         row.user_id = new_user.id
+        row.name_snapshot = name
         reconnected_group_ids.add(row.group_id)
 
     result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.email_ref == ref, SharedExpenseSplit.user_id.is_(None)))
     for row in result.scalars().all():
         row.user_id = new_user.id
+        row.name_snapshot = name
         total_amount += row.share_amount
 
     result = await db.execute(select(SharedExpenseComment).where(SharedExpenseComment.email_ref == ref, SharedExpenseComment.user_id.is_(None)))
     for row in result.scalars().all():
         row.user_id = new_user.id
+        row.name_snapshot = name
 
     result = await db.execute(select(SharedExpense).where(SharedExpense.paid_by_email_ref == ref, SharedExpense.paid_by.is_(None)))
     for row in result.scalars().all():
         row.paid_by = new_user.id
+        row.paid_by_name_snapshot = name
 
     result = await db.execute(select(Settlement).where(Settlement.from_email_ref == ref, Settlement.from_user_id.is_(None)))
     for row in result.scalars().all():
         row.from_user_id = new_user.id
+        row.from_name_snapshot = name
 
     result = await db.execute(select(Settlement).where(Settlement.to_email_ref == ref, Settlement.to_user_id.is_(None)))
     for row in result.scalars().all():
         row.to_user_id = new_user.id
+        row.to_name_snapshot = name
 
     await db.commit()
 
