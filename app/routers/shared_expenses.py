@@ -13,6 +13,7 @@ someone else that they'd need to confirm.
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -60,10 +61,19 @@ async def _require_group_member(db: AsyncSession, *, group_id: str, user_id: str
 async def _group_to_out(db: AsyncSession, group) -> GroupOut:
     members = await svc.get_group_members(db, group_id=group.id)
     pending = await svc.get_group_pending_invites(db, group_id=group.id)
+    # One batch query for every real member's avatar rather than N
+    # individual lookups — avatars are looked up LIVE (never
+    # snapshotted, unlike name_snapshot) so a member's current photo
+    # always shows, not whatever it was when they joined.
+    real_ids = [m.user_id for m in members if m.user_id]
+    avatars: dict[str, str | None] = {}
+    if real_ids:
+        result = await db.execute(select(User.id, User.avatar_data).where(User.id.in_(real_ids)))
+        avatars = dict(result.all())
     return GroupOut(
         id=group.id,
         name=group.name,
-        members=[GroupMemberOut(user_id=m.user_id, name=m.name_snapshot) for m in members],
+        members=[GroupMemberOut(user_id=m.user_id, name=m.name_snapshot, avatar_data=avatars.get(m.user_id)) for m in members],
         pending_invites=pending,
         created_at=group.created_at,
     )
@@ -226,7 +236,12 @@ async def delete_group(
     await svc.delete_group(db, group_id=group_id)
 
 
-def _expense_to_out(expense, splits) -> SharedExpenseOut:
+async def _expense_to_out(db: AsyncSession, expense, splits) -> SharedExpenseOut:
+    real_ids = [s.user_id for s in splits if s.user_id]
+    avatars: dict[str, str | None] = {}
+    if real_ids:
+        result = await db.execute(select(User.id, User.avatar_data).where(User.id.in_(real_ids)))
+        avatars = dict(result.all())
     return SharedExpenseOut(
         id=expense.id,
         group_id=expense.group_id,
@@ -237,7 +252,7 @@ def _expense_to_out(expense, splits) -> SharedExpenseOut:
         split_type=expense.split_type,
         amount=str(expense.amount),
         expense_date=expense.expense_date,
-        splits=[SplitOut(user_id=s.user_id, name=s.name_snapshot, share_amount=str(s.share_amount)) for s in splits],
+        splits=[SplitOut(user_id=s.user_id, name=s.name_snapshot, share_amount=str(s.share_amount), avatar_data=avatars.get(s.user_id)) for s in splits],
         created_at=expense.created_at,
         updated_at=expense.updated_at,
     )
@@ -288,7 +303,7 @@ async def create_expense(
     except SplitValidationError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     splits = await svc.get_expense_splits(db, expense_id=expense.id)
-    return _expense_to_out(expense, splits)
+    return await _expense_to_out(db, expense, splits)
 
 
 @router.get("/groups/{group_id}/expenses", response_model=list[SharedExpenseOut])
@@ -300,7 +315,7 @@ async def list_group_expenses(
     result = []
     for e in expenses:
         splits = await svc.get_expense_splits(db, expense_id=e.id)
-        result.append(_expense_to_out(e, splits))
+        result.append(await _expense_to_out(db, e, splits))
     return result
 
 
@@ -318,7 +333,7 @@ async def get_expense_detail(
 ) -> SharedExpenseOut:
     expense = await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
     splits = await svc.get_expense_splits(db, expense_id=expense_id)
-    return _expense_to_out(expense, splits)
+    return await _expense_to_out(db, expense, splits)
 
 
 @router.patch("/expenses/{expense_id}", response_model=SharedExpenseOut)
@@ -364,7 +379,7 @@ async def edit_expense(
     except SplitValidationError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     splits = await svc.get_expense_splits(db, expense_id=expense_id)
-    return _expense_to_out(updated, splits)
+    return await _expense_to_out(db, updated, splits)
 
 
 @router.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)

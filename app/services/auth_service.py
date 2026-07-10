@@ -16,6 +16,8 @@ into HTTPException anyway — at this codebase's size, that extra layer
 would be indirection without a matching benefit.
 """
 
+import base64
+import binascii
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, HTTPException, Request, status
@@ -301,3 +303,46 @@ async def resend_verification(db: AsyncSession, background_tasks: BackgroundTask
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
     background_tasks.add_task(email_sender.send_verification, current_user.email, verify_link)
     return "Verification email sent."
+
+
+# 300KB is generous slack over what a properly resized thumbnail
+# should ever need (a well-compressed ~150x150 JPEG is typically well
+# under 50KB) — big enough not to reject a reasonable client-side
+# resize, small enough that this being stored directly in Postgres
+# rows (no external object storage exists for this project) stays
+# genuinely cheap rather than becoming its own problem.
+MAX_AVATAR_BYTES = 300_000
+
+
+class AvatarValidationError(ValueError):
+    """A real, expected user-facing error — not a bug — for a malformed or oversized avatar upload."""
+
+
+def _validate_avatar_data(avatar_data: str) -> None:
+    if not avatar_data.startswith("data:image/"):
+        raise AvatarValidationError("Avatar must be an image data URL")
+    if "," not in avatar_data:
+        raise AvatarValidationError("Malformed image data")
+    _header, _, encoded = avatar_data.partition(",")
+    try:
+        decoded_size = len(base64.b64decode(encoded, validate=True))
+    except (binascii.Error, ValueError) as e:
+        raise AvatarValidationError("Malformed image data") from e
+    if decoded_size > MAX_AVATAR_BYTES:
+        raise AvatarValidationError(f"Image too large ({decoded_size // 1000}KB) — resize to under {MAX_AVATAR_BYTES // 1000}KB")
+
+
+async def set_avatar(db: AsyncSession, *, current_user: User, avatar_data: str) -> User:
+    _validate_avatar_data(avatar_data)
+    current_user.avatar_data = avatar_data
+    await db.commit()
+    await db.refresh(current_user)
+    return current_user
+
+
+async def clear_avatar(db: AsyncSession, *, current_user: User) -> User:
+    current_user.avatar_data = None
+    await db.commit()
+    await db.refresh(current_user)
+    return current_user
+

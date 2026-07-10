@@ -57,6 +57,10 @@ class VerifyEmailRequest(BaseModel):
     token: str
 
 
+class AvatarUpdateRequest(BaseModel):
+    avatar_data: str  # a data URL, e.g. "data:image/jpeg;base64,..." — validated server-side for format and size
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -68,6 +72,7 @@ class UserOut(BaseModel):
     display_name: str | None = None
     last_login_at: datetime | None = None
     is_verified: bool = False
+    avatar_data: str | None = None
 
     model_config = {"from_attributes": True}
 

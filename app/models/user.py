@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -47,3 +47,12 @@ class User(Base):
     # email address is confirmed real, so it can be surfaced as a
     # nudge rather than blocking anything.
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # A small base64 data URL (e.g. "data:image/jpeg;base64,...") --
+    # not a reference to external storage, because none exists for
+    # this project yet. Application-level size cap enforced in the
+    # router (avatar_service.MAX_AVATAR_BYTES), not the database --
+    # a resized-client-side thumbnail comfortably fits well under it.
+    # Nullable — no avatar is the common case; initials are the
+    # fallback everywhere this is displayed.
+    avatar_data: Mapped[str | None] = mapped_column(Text, nullable=True)

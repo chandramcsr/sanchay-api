@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -6,6 +6,7 @@ from app.core.deps import get_current_user
 from app.core.limiter import limiter
 from app.models.user import User
 from app.schemas.auth import (
+    AvatarUpdateRequest,
     DeleteAccountRequest,
     ForgotPasswordRequest,
     LoginEventOut,
@@ -19,6 +20,7 @@ from app.schemas.auth import (
     VerifyEmailRequest,
 )
 from app.services import auth_service
+from app.services.auth_service import AvatarValidationError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -62,6 +64,23 @@ async def refresh(request: Request, payload: RefreshRequest, db: AsyncSession = 
 @router.get("/me", response_model=UserOut)
 async def read_current_user(current_user: User = Depends(get_current_user)) -> UserOut:
     return UserOut.model_validate(current_user)
+
+
+@router.put("/me/avatar", response_model=UserOut)
+async def update_avatar(
+    payload: AvatarUpdateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> UserOut:
+    try:
+        updated = await auth_service.set_avatar(db, current_user=current_user, avatar_data=payload.avatar_data)
+    except AvatarValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return UserOut.model_validate(updated)
+
+
+@router.delete("/me/avatar", response_model=UserOut)
+async def remove_avatar(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> UserOut:
+    updated = await auth_service.clear_avatar(db, current_user=current_user)
+    return UserOut.model_validate(updated)
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)

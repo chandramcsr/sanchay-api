@@ -52,6 +52,7 @@ class GroupRenameRequest(BaseModel):
 class GroupMemberOut(BaseModel):
     user_id: str | None  # None if this member's account has since been deleted (frozen)
     name: str  # never the member's email — no group member ever sees another's email address
+    avatar_data: str | None = None  # looked up LIVE from the current user record, never snapshotted — see _group_to_out
 
 
 class PendingInviteOut(BaseModel):
@@ -117,6 +118,7 @@ class SplitOut(BaseModel):
     user_id: str | None
     name: str
     share_amount: str  # decimal string, never float — this is money
+    avatar_data: str | None = None  # looked up LIVE, never snapshotted — see _expense_to_out
 
 
 class SharedExpenseOut(BaseModel):
