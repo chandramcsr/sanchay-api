@@ -570,3 +570,35 @@ async def join_pending_invites(db: AsyncSession, *, new_user: User) -> list[str]
 
     await db.commit()
     return joined_group_names
+
+
+async def rename_group(db: AsyncSession, *, group_id: str, new_name: str) -> Group:
+    group = await db.get(Group, group_id)
+    if group is None:
+        raise ValueError("Group not found")
+    group.name = new_name
+    await db.commit()
+    await db.refresh(group)
+    return group
+
+
+async def delete_group(db: AsyncSession, *, group_id: str) -> None:
+    """
+    Deletes a group AND its membership/pending-invite rows — but the
+    caller (router) must enforce the emptiness rule first: a group
+    with any expense history is not deletable, because that history
+    is a shared record belonging to every member, not just whoever
+    clicked delete. An empty group (no expenses, no settlement
+    implications) is just a container; removing it destroys nothing
+    anyone owes or is owed.
+    """
+    result = await db.execute(select(GroupMember).where(GroupMember.group_id == group_id))
+    for m in result.scalars().all():
+        await db.delete(m)
+    result = await db.execute(select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id))
+    for inv in result.scalars().all():
+        await db.delete(inv)
+    group = await db.get(Group, group_id)
+    if group is not None:
+        await db.delete(group)
+    await db.commit()

@@ -18,6 +18,18 @@ class GroupCreateRequest(BaseModel):
         return v
 
 
+class GroupRenameRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Group name is required")
+        return v
+
+
 class GroupMemberOut(BaseModel):
     user_id: str | None  # None if this member's account has since been deleted (frozen)
     name: str  # never the member's email — no group member ever sees another's email address

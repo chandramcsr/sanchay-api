@@ -359,3 +359,69 @@ async def test_invite_email_failure_does_not_break_group_creation(client, monkey
         json={"email": "someone-new-emailfail@example.com", "password": "hunter2222", "display_name": "New"},
     )
     assert signup_resp.json()["joined_groups"] == ["Resilient Group"]
+
+
+# ---------- rename and delete groups ----------
+
+async def test_rename_group(client):
+    alice_token, _ = await _signup(client, "alice-rn1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "763", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token), json={"name": "Roommates 2026"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "Roommates 2026"
+
+
+async def test_non_member_cannot_rename_a_group(client):
+    alice_token, _ = await _signup(client, "alice-rn2@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-rn2@example.com", "Stranger")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(stranger_token), json={"name": "Hijacked"})
+    assert r.status_code == 404
+
+
+async def test_delete_an_empty_group(client):
+    alice_token, _ = await _signup(client, "alice-del1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Duplicate", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert r.status_code == 204
+
+    get_r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert get_r.status_code == 404  # genuinely gone
+
+
+async def test_cannot_delete_a_group_with_expense_history(client):
+    """The one real safeguard: a group's expense history belongs to everyone in it, not just whoever clicks delete."""
+    alice_token, alice_id = await _signup(client, "alice-del2@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-del2@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Real Group", "member_emails": ["bob-del2@example.com"]})
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
+    )
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert r.status_code == 409
+
+    # And it's genuinely still there afterward.
+    get_r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert get_r.status_code == 200
+
+
+async def test_non_member_cannot_delete_a_group(client):
+    alice_token, _ = await _signup(client, "alice-del3@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-del3@example.com", "Stranger")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "member_emails": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(stranger_token))
+    assert r.status_code == 404
+
+    get_r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
+    assert get_r.status_code == 200  # still there, untouched

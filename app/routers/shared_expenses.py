@@ -27,6 +27,7 @@ from app.schemas.shared_expenses import (
     GroupCreateRequest,
     GroupMemberOut,
     GroupOut,
+    GroupRenameRequest,
     SettlementCreateRequest,
     SettlementOut,
     SharedExpenseCreateRequest,
@@ -110,6 +111,40 @@ async def get_group_detail(
     if group is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
     return await _group_to_out(db, group)
+
+
+@router.patch("/groups/{group_id}", response_model=GroupOut)
+async def rename_group(
+    group_id: str, payload: GroupRenameRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> GroupOut:
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    group = await svc.rename_group(db, group_id=group_id, new_name=payload.name)
+    return await _group_to_out(db, group)
+
+
+@router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(
+    group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    """
+    Only EMPTY groups are deletable — a group with expense history is
+    a shared record belonging to every member, and one person
+    removing it would erase everyone else's view of real debts. An
+    empty group is just a container (this also covers cleaning up
+    duplicates created by the earlier email-send bug, where retries
+    after '500-but-the-group-was-actually-created' left several empty
+    copies behind). Any member can delete an empty group, not just
+    the creator — an empty group holds nothing whose removal could
+    disadvantage anyone.
+    """
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    expenses = await svc.get_group_expenses(db, group_id=group_id)
+    if expenses:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="This group has expense history and can't be deleted — that record belongs to everyone in it.",
+        )
+    await svc.delete_group(db, group_id=group_id)
 
 
 def _expense_to_out(expense, splits) -> SharedExpenseOut:
