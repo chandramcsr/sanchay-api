@@ -37,6 +37,8 @@ before touching this file:
 """
 
 from datetime import datetime, timezone
+
+from fastapi import BackgroundTasks
 from decimal import Decimal
 
 from jwt_library import hash_token
@@ -479,12 +481,31 @@ async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
 
 # ---------- pending invites: adding someone who has no account yet ----------
 
-async def create_pending_invite(db: AsyncSession, *, group_id: str, email: str, invited_by: str, group_name: str, frontend_url: str) -> None:
+async def create_pending_invite(
+    db: AsyncSession,
+    background_tasks: BackgroundTasks,
+    *,
+    group_id: str,
+    email: str,
+    invited_by: str,
+    group_name: str,
+    frontend_url: str,
+) -> None:
     """
-    Creates the pending row AND sends the invite email in one step —
-    a pending invite with no email sent would be a silent dead end
-    for the invitee, who'd never know to sign up. Called from the
-    group-creation router path when an email has no matching account.
+    Creates the pending row and queues the invite email. The email
+    goes through BackgroundTasks — the SAME pattern signup/reset/
+    verification emails already use — for the same two reasons: the
+    response shouldn't wait on Resend's API, and an email delivery
+    failure must never fail the request itself. This was originally
+    (wrongly) a synchronous send, and a real Resend error — sandbox
+    accounts can only send to the account owner's own address until a
+    domain is verified — 500'd the whole group-creation request. The
+    group and the pending invite row are real regardless of whether
+    the email got through; a delivery failure now logs (visible in
+    Render's logs) instead of breaking the request. The invitee-
+    never-learns-about-it risk on a failed send is real but bounded:
+    the group's creator can see the pending invite in the group view
+    and chase them manually.
     """
     normalized = email.strip().lower()
     inviter = await db.get(User, invited_by)
@@ -492,9 +513,28 @@ async def create_pending_invite(db: AsyncSession, *, group_id: str, email: str, 
     await db.commit()
 
     signup_link = frontend_url.rstrip("/") + "/"  # signup is the app's normal entry point, no special invite token needed — matching by email is what makes this work
-    email_sender.send_group_invite(
-        normalized, inviter.display_name if inviter else "Someone", group_name, signup_link
+    background_tasks.add_task(
+        _send_invite_email_safely, normalized, inviter.display_name if inviter else "Someone", group_name, signup_link
     )
+
+
+def _send_invite_email_safely(to_email: str, inviter_name: str, group_name: str, signup_link: str) -> None:
+    """
+    BackgroundTasks swallows exceptions less gracefully than you'd
+    hope (they surface as unhandled errors in logs but read like
+    request failures) — wrapping the send so a delivery failure logs
+    one clear, searchable line instead.
+    """
+    import logging
+
+    try:
+        email_sender.send_group_invite(to_email, inviter_name, group_name, signup_link)
+    except Exception:
+        logging.getLogger("sanchay.email").exception(
+            "Group invite email to %s failed to send — the pending invite row still exists; "
+            "they'll join if they ever sign up with this email, but they were NOT notified.",
+            to_email,
+        )
 
 
 async def join_pending_invites(db: AsyncSession, *, new_user: User) -> list[str]:

@@ -12,7 +12,7 @@ someone else that they'd need to confirm.
 
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -68,7 +68,10 @@ async def _group_to_out(db: AsyncSession, group) -> GroupOut:
 
 @router.post("/groups", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
 async def create_group(
-    payload: GroupCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    payload: GroupCreateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> GroupOut:
     member_ids = []
     pending_emails = []
@@ -86,7 +89,7 @@ async def create_group(
     # invite email's subject line.
     for email in pending_emails:
         await svc.create_pending_invite(
-            db, group_id=group.id, email=email, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
+            db, background_tasks, group_id=group.id, email=email, invited_by=current_user.id, group_name=group.name, frontend_url=settings.frontend_url
         )
 
     return await _group_to_out(db, group)

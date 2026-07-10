@@ -325,3 +325,37 @@ async def test_invited_email_is_matched_case_insensitively(client):
         json={"email": "mixedcase-inv4@example.com", "password": "hunter2222", "display_name": "Mixed"},
     )
     assert signup_resp.json()["joined_groups"] == ["Case Group"]
+
+
+async def test_invite_email_failure_does_not_break_group_creation(client, monkeypatch):
+    """
+    The exact production incident this guards against: Resend's
+    sandbox mode (no verified domain) raises on any send to an
+    address other than the account owner's — and because the send was
+    originally synchronous inside create_pending_invite, that
+    500'd the whole group-creation request. The group and pending
+    invite are real regardless of email delivery; a send failure must
+    log, not fail the request.
+    """
+    from app.core import email as email_module
+
+    def exploding_send(*args, **kwargs):
+        raise RuntimeError("You can only send testing emails to your own email address")
+
+    monkeypatch.setattr(email_module.email_sender, "send_group_invite", exploding_send)
+
+    alice_token, _ = await _signup(client, "alice-emailfail@example.com", "Alice")
+    r = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Resilient Group", "member_emails": ["someone-new-emailfail@example.com"]},
+    )
+    assert r.status_code == 201  # the request succeeds despite the email exploding
+    assert r.json()["pending_invites"] == ["someone-new-emailfail@example.com"]  # the invite row is real
+
+    # And the invite still works end to end — signup joins the group,
+    # proving the failed EMAIL didn't orphan the actual invite.
+    signup_resp = await client.post(
+        "/api/v1/auth/signup",
+        json={"email": "someone-new-emailfail@example.com", "password": "hunter2222", "display_name": "New"},
+    )
+    assert signup_resp.json()["joined_groups"] == ["Resilient Group"]
