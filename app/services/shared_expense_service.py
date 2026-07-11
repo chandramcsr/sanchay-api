@@ -1154,6 +1154,87 @@ async def create_recurring_rule(
     return rule
 
 
+async def edit_recurring_rule(
+    db: AsyncSession,
+    *,
+    rule_id: str,
+    new_description: str | None = None,
+    new_amount: Decimal | None = None,
+    new_category: str | None = None,
+    new_split_type: str | None = None,
+    new_participant_ids: list[str] | None = None,
+    new_pending_participants: list[dict] | None = None,
+    new_participant_values: dict[str, Decimal] | None = None,
+    new_frequency: str | None = None,
+    new_end_date: str | None = None,
+    clear_end_date: bool = False,
+    new_created_by: str | None = None,
+    new_created_by_pending: dict | None = None,
+) -> SharedRecurringRule | None:
+    """
+    Edits the SCHEDULE going forward — never touches start_date or
+    last_materialized, and never reaches back to modify any expense
+    already materialized from this rule (those are independent
+    records with their own edit path, same "corrections don't rewrite
+    history" principle edit_shared_expense already follows). A rule
+    with occurrences already generated keeps generating on the SAME
+    cadence/anchor after this; only what a FUTURE occurrence looks
+    like (amount, who's splitting it, category, etc.) changes.
+
+    Every new_* parameter follows the same "None means leave it
+    alone" convention as edit_shared_expense — including
+    new_created_by/new_created_by_pending (both None means don't
+    touch who pays, matching that a schedule always needs SOME payer,
+    there's no meaningful "clear it" the way there is for end_date).
+    end_date is the one field that DOES need an explicit clear
+    signal (clear_end_date=True) since None is genuinely ambiguous
+    for it — a rule that runs forever is a real, different thing from
+    "don't change whatever end date it already has."
+    """
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        return None
+
+    if new_frequency is not None and new_frequency not in VALID_FREQUENCIES:
+        raise ValueError(f"Unknown frequency: {new_frequency}")
+
+    if new_description is not None:
+        rule.description = new_description
+    if new_amount is not None:
+        rule.amount = new_amount
+    if new_category is not None:
+        rule.category = new_category
+    if new_split_type is not None:
+        rule.split_type = new_split_type
+    if new_participant_ids is not None:
+        rule.participant_ids = new_participant_ids
+    if new_pending_participants is not None:
+        rule.pending_participants = new_pending_participants
+    if new_participant_values is not None:
+        rule.participant_values = {k: str(v) for k, v in new_participant_values.items()}
+    if new_frequency is not None:
+        rule.frequency = new_frequency
+    if clear_end_date:
+        rule.end_date = None
+    elif new_end_date is not None:
+        rule.end_date = new_end_date
+
+    if new_created_by is not None or new_created_by_pending is not None:
+        if new_created_by_pending:
+            rule.created_by = None
+            rule.created_by_email_ref = email_reference(new_created_by_pending["email"])
+            rule.created_by_name_snapshot = new_created_by_pending["name"]
+        else:
+            payer = await db.get(User, new_created_by)
+            rule.created_by = new_created_by
+            rule.created_by_email_ref = email_reference(payer.email) if payer else ""
+            rule.created_by_name_snapshot = payer.display_name if payer else "Unknown"
+
+    await db.commit()
+    await db.refresh(rule)
+    return rule
+
+
 async def list_recurring_rules(db: AsyncSession, *, group_id: str) -> list[SharedRecurringRule]:
     result = await db.execute(
         select(SharedRecurringRule).where(SharedRecurringRule.group_id == group_id).order_by(SharedRecurringRule.created_at)

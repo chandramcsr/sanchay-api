@@ -42,6 +42,7 @@ from app.schemas.shared_expenses import (
     GroupOut,
     GroupRenameRequest,
     RecurringRuleCreateRequest,
+    RecurringRuleEditRequest,
     RecurringRuleOut,
     SetRecurringRuleActiveRequest,
     SettlementCreateRequest,
@@ -421,6 +422,68 @@ async def list_recurring_rules(
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
     rules = await svc.list_recurring_rules(db, group_id=group_id)
     return [_rule_to_out(r) for r in rules]
+
+
+@router.patch("/recurring/{rule_id}", response_model=RecurringRuleOut)
+async def edit_recurring_rule(
+    rule_id: str, payload: RecurringRuleEditRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> RecurringRuleOut:
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Recurring rule not found")
+    await _require_group_member(db, group_id=rule.group_id, user_id=current_user.id)
+
+    participants_changing = payload.participant_ids is not None or payload.pending_participants is not None
+    paid_by_changing = payload.paid_by is not None or payload.paid_by_pending is not None
+    group = None
+
+    if participants_changing or paid_by_changing:
+        group_member_ids = {m.user_id for m in await svc.get_group_members(db, group_id=rule.group_id) if m.user_id}
+        group = await svc.get_group(db, group_id=rule.group_id)
+
+    if participants_changing:
+        real_ids = payload.participant_ids if payload.participant_ids is not None else []
+        pending = payload.pending_participants if payload.pending_participants is not None else []
+        if not real_ids and not pending:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="At least one participant is required")
+        invalid = set(real_ids) - group_member_ids
+        if invalid:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="All participants must be members of this group")
+        for p in pending:
+            await svc.ensure_pending_invite(
+                db, background_tasks, group_id=rule.group_id, email=p.email, name=p.name,
+                invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+            )
+
+    if payload.paid_by is not None and payload.paid_by not in group_member_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="paid_by must be a member of this group")
+    if payload.paid_by_pending:
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=rule.group_id, email=payload.paid_by_pending.email, name=payload.paid_by_pending.name,
+            invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+        )
+
+    try:
+        updated = await svc.edit_recurring_rule(
+            db, rule_id=rule_id,
+            new_description=payload.description,
+            new_amount=_to_decimal(payload.amount, "amount") if payload.amount is not None else None,
+            new_category=payload.category,
+            new_split_type=payload.split_type,
+            new_participant_ids=payload.participant_ids,
+            new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
+            new_participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()} if payload.participant_values is not None else None,
+            new_frequency=payload.frequency,
+            new_end_date=payload.end_date,
+            clear_end_date=payload.clear_end_date,
+            new_created_by=payload.paid_by,
+            new_created_by_pending={"email": payload.paid_by_pending.email, "name": payload.paid_by_pending.name} if payload.paid_by_pending else None,
+        )
+    except SplitValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return _rule_to_out(updated)
 
 
 @router.patch("/recurring/{rule_id}/active", response_model=RecurringRuleOut)

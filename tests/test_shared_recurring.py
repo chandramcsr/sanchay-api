@@ -155,6 +155,214 @@ async def test_resuming_a_paused_rule_catches_up_again(client):
     assert resume_resp.json()["active"] is True
 
 
+async def test_edit_recurring_rule_changes_amount_and_description(client):
+    alice_token, alice_id = await _signup(client, "recedit1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Gym", "amount": 40.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(
+        f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token),
+        json={"description": "Gym Membership", "amount": 45.00},
+    )
+    assert r.status_code == 200
+    assert r.json()["description"] == "Gym Membership"
+    assert r.json()["amount"] == "45.00"
+
+
+async def test_edit_recurring_rule_never_changes_start_date(client):
+    alice_token, alice_id = await _signup(client, "recedit2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    start = _today()
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": start},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"amount": 1100.00})
+    assert r.json()["start_date"] == start  # untouched, even though amount changed
+
+
+async def test_edit_recurring_rule_does_not_retroactively_change_already_materialized_expenses(client):
+    alice_token, alice_id = await _signup(client, "recedit3@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+    before = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert before[0]["amount"] == "1000.00"
+
+    await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"amount": 1200.00})
+
+    after = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert after[0]["amount"] == "1000.00"  # the already-materialized expense is untouched
+    assert after[0]["id"] == before[0]["id"]
+
+
+async def test_edit_recurring_rule_can_change_paid_by_to_another_real_member(client):
+    alice_token, alice_id = await _signup(client, "recedit4@example.com", "Alice")
+    _, bob_id = await _signup(client, "recedit4b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "recedit4b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id, bob_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"paid_by": bob_id})
+    assert r.json()["created_by"] == bob_id
+    assert r.json()["created_by_name"] == "Bob"
+
+
+async def test_edit_recurring_rule_can_change_paid_by_to_a_pending_payer(client):
+    alice_token, alice_id = await _signup(client, "recedit5@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(
+        f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token),
+        json={"paid_by_pending": {"email": "sam-recedit5@example.com", "name": "Sam"}},
+    )
+    assert r.json()["created_by"] is None
+    assert r.json()["created_by_name"] == "Sam"
+    group = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))).json()
+    assert any(p["email"] == "sam-recedit5@example.com" for p in group["pending_invites"])
+
+
+async def test_edit_recurring_rule_can_clear_end_date(client):
+    alice_token, alice_id = await _signup(client, "recedit6@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    future_end = (datetime.now(timezone.utc) + timedelta(days=90)).strftime("%Y-%m-%d")
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Trial subscription", "amount": 10.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today(), "end_date": future_end},
+    )
+    rule_id = create_resp.json()["id"]
+    assert create_resp.json()["end_date"] == future_end
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"clear_end_date": True})
+    assert r.json()["end_date"] is None
+
+
+async def test_edit_recurring_rule_can_change_frequency(client):
+    alice_token, alice_id = await _signup(client, "recedit7@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Insurance", "amount": 300.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"frequency": "quarterly"})
+    assert r.json()["frequency"] == "quarterly"
+
+
+async def test_edit_recurring_rule_can_change_participants_and_split(client):
+    alice_token, alice_id = await _signup(client, "recedit8@example.com", "Alice")
+    _, bob_id = await _signup(client, "recedit8b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "recedit8b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(
+        f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token),
+        json={
+            "participant_ids": [alice_id, bob_id], "pending_participants": [],
+            "split_type": "percentage", "participant_values": {alice_id: 70, bob_id: 30},
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["split_type"] == "percentage"
+
+
+async def test_edit_recurring_rule_rejects_a_non_member_as_paid_by(client):
+    alice_token, alice_id = await _signup(client, "recedit9@example.com", "Alice")
+    _, outsider_id = await _signup(client, "recedit9outsider@example.com", "Outsider")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"paid_by": outsider_id})
+    assert r.status_code == 400
+
+
+async def test_edit_recurring_rule_rejects_invalid_frequency(client):
+    alice_token, alice_id = await _signup(client, "recedit10@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token), json={"frequency": "daily"})
+    assert r.status_code == 422  # rejected by the schema's Literal type before it even reaches the service
+
+
+async def test_edit_recurring_rule_requires_group_membership(client):
+    alice_token, alice_id = await _signup(client, "recedit11@example.com", "Alice")
+    mallory_token, _ = await _signup(client, "recedit11mallory@example.com", "Mallory")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(mallory_token), json={"amount": 1.00})
+    assert r.status_code in (403, 404)
+
+
+async def test_edit_nonexistent_recurring_rule_returns_404(client):
+    alice_token, _ = await _signup(client, "recedit12@example.com", "Alice")
+    r = await client.patch("/api/v1/shared-expenses/recurring/not-a-real-id", headers=_auth(alice_token), json={"amount": 1.00})
+    assert r.status_code == 404
+
+
+async def test_edit_recurring_rule_cannot_set_both_paid_by_fields(client):
+    alice_token, alice_id = await _signup(client, "recedit13@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.patch(
+        f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token),
+        json={"paid_by": alice_id, "paid_by_pending": {"email": "x@example.com", "name": "X"}},
+    )
+    assert r.status_code == 422
+
+
 async def test_quarterly_frequency_accepted_end_to_end(client):
     alice_token, alice_id = await _signup(client, "rec11@example.com", "Alice")
     group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})

@@ -271,6 +271,52 @@ class RecurringRuleCreateRequest(BaseModel):
         return v
 
 
+class RecurringRuleEditRequest(BaseModel):
+    """
+    All optional, same "None means leave it alone" convention as
+    SharedExpenseEditRequest — including for paid_by/paid_by_pending,
+    where both None means "don't touch who pays," not "clear it."
+
+    Deliberately has no start_date at all — not just optional-and-
+    unused, genuinely absent. The anchor date drives due_occurrences()
+    together with last_materialized; changing it after occurrences
+    have already been generated would desync the two in ways that are
+    hard to reason about (does changing the anchor retroactively
+    change what "already materialized" means?). Same restriction the
+    personal recurring engine already has for the identical reason —
+    edits apply to future occurrences only, never re-anchor the
+    schedule itself.
+    """
+    description: str | None = None
+    amount: float | None = Field(default=None, gt=0)
+    category: str | None = None
+    split_type: Literal["equal", "shares", "percentage", "exact"] | None = None
+    participant_ids: list[str] | None = None
+    pending_participants: list[MemberInvite] | None = None
+    participant_values: dict[str, float] | None = None
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"] | None = None
+    end_date: str | None = None
+    clear_end_date: bool = False  # end_date=None is ambiguous ("don't touch" vs "remove it") — this disambiguates, same problem SharedExpenseEditRequest's paid_by never had (an expense's payer is never "cleared", just changed) but a schedule's end date genuinely can be removed
+    paid_by: str | None = None
+    paid_by_pending: MemberInvite | None = None
+
+    @field_validator("paid_by_pending")
+    @classmethod
+    def not_both_paid_by_fields(cls, v, info):
+        if v is not None and info.data.get("paid_by"):
+            raise ValueError("Set either paid_by or paid_by_pending, not both")
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def description_not_blank_if_given(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("Description can't be blank")
+        return v
+
+
 class RecurringRuleOut(BaseModel):
     id: str
     group_id: str
