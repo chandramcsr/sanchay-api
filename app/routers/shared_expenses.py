@@ -374,14 +374,25 @@ def _rule_to_out(rule) -> RecurringRuleOut:
 
 @router.post("/groups/{group_id}/recurring", response_model=RecurringRuleOut, status_code=status.HTTP_201_CREATED)
 async def create_recurring_rule(
-    group_id: str, payload: RecurringRuleCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    group_id: str, payload: RecurringRuleCreateRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> RecurringRuleOut:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+
+    group_member_ids = {m.user_id for m in await svc.get_group_members(db, group_id=group_id) if m.user_id}
+    if payload.paid_by is not None and payload.paid_by not in group_member_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="paid_by must be a member of this group")
+    if payload.paid_by_pending:
+        group = await svc.get_group(db, group_id=group_id)
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=group_id, email=payload.paid_by_pending.email, name=payload.paid_by_pending.name,
+            invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+        )
+
     try:
         rule = await svc.create_recurring_rule(
             db,
             group_id=group_id,
-            created_by=current_user.id,
+            created_by=None if payload.paid_by_pending else (payload.paid_by or current_user.id),
             description=payload.description,
             amount=_to_decimal(payload.amount, "amount"),
             category=payload.category,
@@ -392,6 +403,7 @@ async def create_recurring_rule(
             frequency=payload.frequency,
             start_date=payload.start_date,
             end_date=payload.end_date,
+            created_by_pending={"email": payload.paid_by_pending.email, "name": payload.paid_by_pending.name} if payload.paid_by_pending else None,
         )
     except SplitValidationError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -421,6 +433,17 @@ async def set_recurring_rule_active(
     await _require_group_member(db, group_id=rule.group_id, user_id=current_user.id)
     updated = await svc.set_recurring_rule_active(db, rule_id=rule_id, active=payload.active)
     return _rule_to_out(updated)
+
+
+@router.delete("/recurring/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_recurring_rule(
+    rule_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Recurring rule not found")
+    await _require_group_member(db, group_id=rule.group_id, user_id=current_user.id)
+    await svc.delete_recurring_rule(db, rule_id=rule_id)
 
 
 async def _require_expense_access(db: AsyncSession, *, expense_id: str, user_id: str):

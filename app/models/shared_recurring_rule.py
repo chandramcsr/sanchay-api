@@ -52,6 +52,11 @@ class SharedRecurringRule(Base):
     # snapshot name survives the creator's account being deleted).
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by_name_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Added after this table already had rows in production — server_default=""
+    # backfills existing rules (an empty ref just means "never matches any
+    # signup," the same as SharedExpense.paid_by_email_ref's own behavior
+    # for a real, already-connected payer that never needs reconnecting).
+    created_by_email_ref: Mapped[str] = mapped_column(String(64), nullable=False, server_default="", index=True)
 
     description: Mapped[str] = mapped_column(String(500), nullable=False)
     amount: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)

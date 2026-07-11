@@ -169,6 +169,131 @@ async def test_quarterly_frequency_accepted_end_to_end(client):
     assert r.json()["last_materialized"] == _today()
 
 
+async def test_recurring_rule_paid_by_defaults_to_the_caller_when_omitted(client):
+    alice_token, alice_id = await _signup(client, "rrpaid1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    assert r.json()["created_by"] == alice_id
+    assert r.json()["created_by_name"] == "Alice"
+
+
+async def test_recurring_rule_can_be_set_up_as_paid_by_another_real_member(client):
+    alice_token, alice_id = await _signup(client, "rrpaid2@example.com", "Alice")
+    _, bob_id = await _signup(client, "rrpaid2b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "rrpaid2b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={
+            "description": "Rent", "amount": 1000.00, "participant_ids": [alice_id, bob_id], "pending_participants": [],
+            "frequency": "monthly", "start_date": _today(), "paid_by": bob_id,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["created_by"] == bob_id
+    assert r.json()["created_by_name"] == "Bob"
+    # And the materialized occurrence should correctly attribute Bob as payer too.
+    expenses = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert expenses[0]["paid_by"] == bob_id
+
+
+async def test_recurring_rule_can_be_set_up_as_paid_by_a_pending_payer(client):
+    alice_token, alice_id = await _signup(client, "rrpaid3@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={
+            "description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [],
+            "frequency": "monthly", "start_date": _today(), "paid_by_pending": {"email": "sam-rrpaid3@example.com", "name": "Sam"},
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["created_by"] is None
+    assert r.json()["created_by_name"] == "Sam"
+
+    group = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))).json()
+    assert any(p["email"] == "sam-rrpaid3@example.com" for p in group["pending_invites"])
+
+
+async def test_recurring_rule_pending_payer_reconnects_on_signup(client):
+    alice_token, alice_id = await _signup(client, "rrpaid4@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={
+            "description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [],
+            "frequency": "monthly", "start_date": _today(), "paid_by_pending": {"email": "sam-rrpaid4@example.com", "name": "Sam"},
+        },
+    )
+    _, sam_id = await _signup(client, "sam-rrpaid4@example.com", "Samuel")
+
+    rules = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token))).json()
+    assert rules[0]["created_by"] == sam_id
+    assert rules[0]["created_by_name"] == "Samuel"
+
+
+async def test_delete_recurring_rule(client):
+    alice_token, alice_id = await _signup(client, "rrdel1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Gym", "amount": 40.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    delete_resp = await client.delete(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token))
+    assert delete_resp.status_code == 204
+
+    rules = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token))).json()
+    assert rules == []
+
+
+async def test_deleting_a_recurring_rule_does_not_delete_expenses_it_already_materialized(client):
+    alice_token, alice_id = await _signup(client, "rrdel2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Gym", "amount": 40.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+    before = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert len(before) == 1  # materialized immediately since start_date is today
+
+    await client.delete(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(alice_token))
+
+    after = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert len(after) == 1  # still there, untouched
+
+
+async def test_delete_recurring_rule_requires_group_membership(client):
+    alice_token, alice_id = await _signup(client, "rrdel3@example.com", "Alice")
+    mallory_token, _ = await _signup(client, "rrdel3mallory@example.com", "Mallory")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Private", "members": []})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Rent", "amount": 1000.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "monthly", "start_date": _today()},
+    )
+    rule_id = create_resp.json()["id"]
+
+    r = await client.delete(f"/api/v1/shared-expenses/recurring/{rule_id}", headers=_auth(mallory_token))
+    assert r.status_code in (403, 404)
+
+
+async def test_delete_nonexistent_recurring_rule_returns_404(client):
+    alice_token, _ = await _signup(client, "rrdel4@example.com", "Alice")
+    r = await client.delete("/api/v1/shared-expenses/recurring/not-a-real-id", headers=_auth(alice_token))
+    assert r.status_code == 404
+
+
 async def test_list_recurring_rules_for_a_group(client):
     alice_token, alice_id = await _signup(client, "rec8@example.com", "Alice")
     group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})

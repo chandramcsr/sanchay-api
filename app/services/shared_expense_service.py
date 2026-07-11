@@ -780,6 +780,11 @@ async def reconnect_by_email(db: AsyncSession, *, new_user: User) -> dict:
         row.paid_by = new_user.id
         row.paid_by_name_snapshot = name
 
+    result = await db.execute(select(SharedRecurringRule).where(SharedRecurringRule.created_by_email_ref == ref, SharedRecurringRule.created_by.is_(None)))
+    for row in result.scalars().all():
+        row.created_by = new_user.id
+        row.created_by_name_snapshot = name
+
     result = await db.execute(select(Settlement).where(Settlement.from_email_ref == ref, Settlement.from_user_id.is_(None)))
     for row in result.scalars().all():
         row.from_user_id = new_user.id
@@ -1084,7 +1089,7 @@ async def create_recurring_rule(
     db: AsyncSession,
     *,
     group_id: str,
-    created_by: str,
+    created_by: str | None,
     description: str,
     amount: Decimal,
     category: str,
@@ -1095,6 +1100,7 @@ async def create_recurring_rule(
     frequency: str,
     start_date: str,
     end_date: str | None,
+    created_by_pending: dict | None = None,
 ) -> SharedRecurringRule:
     """
     Creates the SCHEDULE only — no SharedExpense rows exist yet from
@@ -1102,15 +1108,35 @@ async def create_recurring_rule(
     occurrences into real expenses, called lazily whenever a group's
     expenses/balances are actually read (see that function's own
     docstring for why lazy catch-up, not a background job).
+
+    created_by/created_by_pending: same idea and same mutual
+    exclusivity as create_shared_expense's paid_by/paid_by_pending —
+    who pays each materialized occurrence, defaulting to the caller
+    when both are omitted. Reuses the SAME created_by/
+    created_by_name_snapshot columns the rule already had rather than
+    adding new ones: those fields were always effectively "who pays"
+    in practice (materialize_due_shared_expenses already used
+    created_by as the payer for every occurrence) — this just makes
+    that overridable instead of hardcoded to whoever set the rule up.
     """
     if frequency not in VALID_FREQUENCIES:
         raise ValueError(f"Unknown frequency: {frequency}")
 
-    creator = await db.get(User, created_by)
+    if created_by_pending:
+        payer_email_ref = email_reference(created_by_pending["email"])
+        payer_name = created_by_pending["name"]
+        resolved_created_by = None
+    else:
+        creator = await db.get(User, created_by)
+        payer_email_ref = email_reference(creator.email) if creator else ""
+        payer_name = creator.display_name if creator else "Unknown"
+        resolved_created_by = created_by
+
     rule = SharedRecurringRule(
         group_id=group_id,
-        created_by=created_by,
-        created_by_name_snapshot=creator.display_name if creator else "Unknown",
+        created_by=resolved_created_by,
+        created_by_name_snapshot=payer_name,
+        created_by_email_ref=payer_email_ref,
         description=description,
         amount=amount,
         category=category,
@@ -1140,14 +1166,16 @@ async def set_recurring_rule_active(db: AsyncSession, *, rule_id: str, active: b
     Pausing/resuming, not deleting — a paused rule (e.g. a subscription
     on hold, a roommate moving out temporarily) stops generating new
     expenses but its own row and every expense it already materialized
-    stay exactly as they are. Real deletion isn't offered at all: the
-    rule itself is just a schedule with no money attached directly to
-    IT (the materialized SharedExpense rows are the real records, and
-    those already have their own independent delete path) — nothing
-    is lost by leaving an inactive rule around indefinitely, and
-    "why did rent stop appearing" is a more confusing question to
-    answer from silence than from a rule that's visibly still there,
-    just paused.
+    stay exactly as they are. This is the RIGHT tool for a temporary
+    hold specifically; delete_recurring_rule (below) exists separately
+    for the different, real case of "this was a mistake, remove it
+    entirely" — not offering both was the original design, revisited
+    after being asked for it directly: "why did rent stop appearing"
+    is a more confusing question to answer from silence than from a
+    rule that's visibly still there, paused, which is exactly why
+    pause stays the default suggestion — but a genuinely wrong rule
+    (typo'd amount, wrong people, created in the wrong group) has no
+    reason to sit around forever just because deletion wasn't offered.
     """
     rule = await db.get(SharedRecurringRule, rule_id)
     if rule is None:
@@ -1156,6 +1184,25 @@ async def set_recurring_rule_active(db: AsyncSession, *, rule_id: str, active: b
     await db.commit()
     await db.refresh(rule)
     return rule
+
+
+async def delete_recurring_rule(db: AsyncSession, *, rule_id: str) -> bool:
+    """
+    Deletes the SCHEDULE only — every expense it already materialized
+    is a real, independent SharedExpense row with its own splits and
+    its own delete path, and none of that is touched here. Deleting
+    the rule just means no FUTURE occurrences get generated; it is not
+    a way to retroactively undo history, the same principle
+    set_recurring_rule_active's own docstring already establishes for
+    pausing. Returns whether a rule was actually found and deleted, so
+    the router can 404 correctly rather than silently no-op.
+    """
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        return False
+    await db.delete(rule)
+    await db.commit()
+    return True
 
 
 async def materialize_due_shared_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:

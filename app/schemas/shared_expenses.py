@@ -237,6 +237,23 @@ class RecurringRuleCreateRequest(BaseModel):
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     start_date: str  # YYYY-MM-DD
     end_date: str | None = None
+    # Who pays each materialized occurrence — defaults to the caller
+    # if omitted, same as one-off expenses. Stored on the SAME
+    # created_by/created_by_name_snapshot fields the rule already had
+    # (no new columns): "who set this schedule up" and "who pays each
+    # cycle" were always effectively the same field in practice, since
+    # materialize_due_shared_expenses already used created_by as the
+    # payer for every occurrence — this just makes that explicit and
+    # overridable, matching what one-off expenses already allow.
+    paid_by: str | None = None
+    paid_by_pending: MemberInvite | None = None
+
+    @field_validator("paid_by_pending")
+    @classmethod
+    def not_both_paid_by_fields(cls, v, info):
+        if v is not None and info.data.get("paid_by"):
+            raise ValueError("Set either paid_by or paid_by_pending, not both")
+        return v
 
     @field_validator("description")
     @classmethod
