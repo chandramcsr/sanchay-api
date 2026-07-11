@@ -4,10 +4,20 @@ checks group membership FIRST (is_group_member) before returning or
 mutating anything — a group's financial detail must never be
 reachable just by guessing its id.
 
-paid_by is always the authenticated caller, never a parameter someone
-else could set on your behalf — auto-accept (no approval gate) is
-only safe because "I paid this" is self-attested, never a claim about
-someone else that they'd need to confirm.
+paid_by can be set to any member of the group, not just the caller —
+a deliberate, discussed product decision, not an oversight. The
+original design had paid_by locked to the authenticated caller
+specifically because auto-accept (no approval gate) was only safe
+when "I paid this" was self-attested. Allowing any member to be named
+as payer reopens that exact gap: someone can claim another real
+member paid for something they didn't, and that member finds out only
+by later noticing their balance changed, with no confirmation step in
+between. Accepted knowingly as a tradeoff for a simpler add-expense
+flow (letting anyone log a bill on the actual payer's behalf, a
+common real case — e.g. entering a receipt for someone who forgot to)
+rather than building a pending/confirm-or-dispute workflow. If this
+becomes a real problem in practice, the fix is that confirmation step,
+not reverting the flexibility.
 """
 
 from decimal import Decimal, InvalidOperation
@@ -277,6 +287,14 @@ async def create_expense(
     if invalid:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="All participants must be members of this group")
 
+    # Defaults to the caller when omitted (the ORIGINAL, still-common
+    # case: you're logging your own expense). See this module's own
+    # docstring for the deliberate tradeoff in allowing any OTHER real
+    # member to be named here too.
+    paid_by = payload.paid_by or current_user.id
+    if paid_by not in group_member_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="paid_by must be a member of this group")
+
     group = await svc.get_group(db, group_id=group_id)
 
     # A pending participant doesn't need to already be a member (or
@@ -294,7 +312,7 @@ async def create_expense(
         expense = await svc.create_shared_expense(
             db,
             group_id=group_id,
-            paid_by=current_user.id,  # always the caller — see module docstring
+            paid_by=paid_by,  # defaults to the caller, but may be any validated group member — see module docstring
             description=payload.description,
             amount=_to_decimal(payload.amount, "amount"),
             expense_date=payload.expense_date,

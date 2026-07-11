@@ -77,7 +77,7 @@ async def test_create_expense_splits_correctly_and_returns_it(client):
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["paid_by"] == alice_id  # always the caller, never settable to someone else
+    assert body["paid_by"] == alice_id  # defaults to the caller when paid_by isn't specified
     assert body["paid_by_name"] == "Alice"
     shares = {s["user_id"]: s["share_amount"] for s in body["splits"]}
     assert shares[alice_id] == "50.00"
@@ -96,12 +96,6 @@ async def test_create_expense_rejects_a_participant_who_is_not_a_group_member(cl
         json={"description": "Dinner", "amount": 50.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, outsider_id]},
     )
     assert r.status_code == 400
-
-
-async def test_paid_by_cannot_be_set_to_someone_else(client):
-    """The request schema has no paid_by field at all — confirmed structurally, not just by convention."""
-    from app.schemas.shared_expenses import SharedExpenseCreateRequest
-    assert "paid_by" not in SharedExpenseCreateRequest.model_fields
 
 
 async def test_edit_expense_recalculates_splits(client):
@@ -864,6 +858,63 @@ async def test_edit_expense_date(client):
 
 
 # ---------- alternate split types: shares, percentage, exact ----------
+
+async def test_expense_paid_by_defaults_to_the_caller_when_omitted(client):
+    alice_token, alice_id = await _signup(client, "paidby1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    assert r.json()["paid_by"] == alice_id
+    assert r.json()["paid_by_name"] == "Alice"
+
+
+async def test_expense_can_be_logged_as_paid_by_another_real_group_member(client):
+    alice_token, alice_id = await _signup(client, "paidby2@example.com", "Alice")
+    _, bob_id = await _signup(client, "paidby2b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "paidby2b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+
+    # Alice logs an expense but names BOB as the actual payer.
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Groceries", "amount": 60.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Groceries", "paid_by": bob_id},
+    )
+    assert r.status_code == 201
+    assert r.json()["paid_by"] == bob_id
+    assert r.json()["paid_by_name"] == "Bob"
+    # Balance reflects Bob as payer, not Alice -- Alice (who logged it) owes HER share to Bob.
+    balances = (await client.get("/api/v1/shared-expenses/balances", headers=_auth(alice_token))).json()
+    bob_balance = next(b for b in balances if b["name"] == "Bob")
+    assert bob_balance["you_owe_them"] == "30.00"
+
+
+async def test_expense_cannot_claim_a_non_member_as_payer(client):
+    alice_token, alice_id = await _signup(client, "paidby3@example.com", "Alice")
+    _, outsider_id = await _signup(client, "paidby3outsider@example.com", "Outsider")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Sneaky", "amount": 20.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Other", "paid_by": outsider_id},
+    )
+    assert r.status_code == 400
+
+
+async def test_expense_cannot_claim_a_bogus_user_id_as_payer(client):
+    alice_token, alice_id = await _signup(client, "paidby4@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Bogus", "amount": 20.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Other", "paid_by": "not-a-real-id"},
+    )
+    assert r.status_code == 400
+
 
 async def test_create_expense_split_by_shares(client):
     alice_token, alice_id = await _signup(client, "alice-split1@example.com", "Alice")

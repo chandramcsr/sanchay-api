@@ -83,6 +83,13 @@ class SharedExpenseCreateRequest(BaseModel):
     # split_type != "equal". Value meaning depends on split_type:
     # a share count, a percentage (0-100), or an exact dollar amount.
     participant_values: dict[str, float] = Field(default_factory=dict)
+    # Who paid — defaults to the caller if omitted. Can be set to any
+    # OTHER real member's user_id too (see the router module's own
+    # docstring for the deliberate trust tradeoff this represents).
+    # Router validates this against real group membership; a pending
+    # (not-yet-signed-up) invite can never be named as payer — there's
+    # no real account for them to have actually paid anything with.
+    paid_by: str | None = None
 
     @field_validator("description")
     @classmethod
