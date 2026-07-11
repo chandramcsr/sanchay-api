@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 30
     cors_origins: str = "http://localhost:5173,https://chandramcsr.github.io"
 
+    # Feature switch for enforcing email verification at login. Default
+    # False (today's behavior: unverified accounts can log in freely) —
+    # the email service (Resend, sandbox mode) currently can't deliver
+    # to arbitrary recipient addresses, only to the account's own
+    # verified sender, so flipping this on before that's resolved would
+    # lock out real signups. Flip to True once outbound delivery to
+    # arbitrary addresses is confirmed working end-to-end.
+    require_email_verification: bool = False
+
     # Email (password reset). Optional on purpose: if unset, the reset
     # link is logged instead of emailed — keeps local dev/tests working
     # with zero config, same pattern as everything else in this app

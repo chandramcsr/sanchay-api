@@ -137,3 +137,20 @@ async def resend_verification(
 ) -> dict[str, str]:
     message = await auth_service.resend_verification(db, background_tasks, current_user=current_user)
     return {"message": message}
+
+
+@router.post("/resend-verification-by-email", status_code=status.HTTP_200_OK)
+@limiter.limit("3/hour")
+async def resend_verification_by_email(
+    request: Request, payload: ForgotPasswordRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)
+) -> dict[str, str]:
+    """
+    Unauthenticated escape hatch for require_email_verification=True:
+    an unverified user with no active session (closed the app before
+    verifying) has no token to call the endpoint above with. Same
+    generic response regardless of whether the email is registered or
+    already verified — same enumeration-safety principle as
+    forgot-password.
+    """
+    await auth_service.resend_verification_by_email(db, background_tasks, email=payload.email)
+    return {"message": "If that email needs verification, a new link has been sent."}

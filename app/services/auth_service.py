@@ -123,6 +123,21 @@ async def login(db: AsyncSession, request: Request, *, email: str, password: str
     if not success:
         raise generic_error
 
+    # Deliberately checked AFTER the password match above, never before
+    # and never merged into generic_error's branch: at this point the
+    # caller has already proven they know the correct password for this
+    # exact account, so telling them specifically "verify your email"
+    # here reveals nothing an attacker couldn't already deduce from a
+    # correct-password guess. Checking this earlier (or distinguishing
+    # "no such account" from "unverified account" for a WRONG password)
+    # would be exactly the enumeration leak forgot_password() above is
+    # written to avoid.
+    if settings.require_email_verification and not user.is_verified:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="Please verify your email before logging in. Check your inbox for the link, or request a new one.",
+        )
+
     access_token, refresh_token = await _issue_token_pair(db, user)
     return access_token, refresh_token, user
 
@@ -303,6 +318,31 @@ async def resend_verification(db: AsyncSession, background_tasks: BackgroundTask
     verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
     background_tasks.add_task(email_sender.send_verification, current_user.email, verify_link)
     return "Verification email sent."
+
+
+async def resend_verification_by_email(db: AsyncSession, background_tasks: BackgroundTasks, *, email: str) -> None:
+    """
+    Unauthenticated counterpart to resend_verification(), needed once
+    require_email_verification=True can actually block login: at that
+    point an unverified user who closes the app before verifying has
+    no access token, so the authenticated endpoint above is
+    permanently unreachable to them. This is that escape hatch.
+
+    Same enumeration-safe shape as forgot_password() above and for the
+    same reason — the router returns one generic message regardless of
+    whether the email is registered, already verified, or genuinely
+    gets a new link, so this endpoint can never be used to test which
+    emails have an account.
+    """
+    user = await user_repository.get_by_email(db, email.lower())
+    if user is None or user.is_verified:
+        return
+
+    raw_token, token_hash = generate_reset_token()
+    email_verification_repository.create(db, user_id=user.id, token_hash=token_hash)
+    await db.commit()
+    verify_link = f"{settings.frontend_url.rstrip('/')}/?verify_token={raw_token}"
+    background_tasks.add_task(email_sender.send_verification, user.email, verify_link)
 
 
 # 300KB is generous slack over what a properly resized thumbnail
