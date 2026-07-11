@@ -326,6 +326,15 @@ class RecurringRuleOut(BaseModel):
     amount: str
     category: str
     split_type: str
+    participant_ids: list[str]
+    pending_participants: list[MemberInvite]
+    # Keyed the same way SharedExpenseOut's splits imply — real
+    # user_id or normalized pending email — string values (not float)
+    # for the same reason every other money-adjacent value in this
+    # file is a string: floats have no business representing exact
+    # decimal amounts, and this can hold exact dollar amounts (split_
+    # type "exact") as well as shares/percentages.
+    participant_values: dict[str, str]
     frequency: str
     start_date: str
     end_date: str | None

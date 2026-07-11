@@ -502,6 +502,37 @@ async def test_delete_nonexistent_recurring_rule_returns_404(client):
     assert r.status_code == 404
 
 
+async def test_recurring_rule_output_exposes_participants_and_split_for_editing(client):
+    """
+    Confirms the fields an edit form actually needs to pre-fill correctly
+    -- previously RecurringRuleOut only exposed schedule metadata
+    (frequency, dates, amount), with no way for a client to know who was
+    even in the split, let alone edit it accurately.
+    """
+    alice_token, alice_id = await _signup(client, "rrfields1@example.com", "Alice")
+    _, bob_id = await _signup(client, "rrfields1b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "rrfields1b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    create_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={
+            "description": "Rent", "amount": 1000.00, "participant_ids": [alice_id, bob_id], "pending_participants": [],
+            "split_type": "percentage", "participant_values": {alice_id: 60, bob_id: 40},
+            "frequency": "monthly", "start_date": _today(),
+        },
+    )
+    body = create_resp.json()
+    assert set(body["participant_ids"]) == {alice_id, bob_id}
+    assert body["pending_participants"] == []
+    assert body["split_type"] == "percentage"
+    assert body["participant_values"][alice_id] == "60.00"
+    assert body["participant_values"][bob_id] == "40.00"
+
+    # Also confirmed on the LIST endpoint, not just the create response.
+    rules = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token))).json()
+    assert set(rules[0]["participant_ids"]) == {alice_id, bob_id}
+
+
 async def test_list_recurring_rules_for_a_group(client):
     alice_token, alice_id = await _signup(client, "rec8@example.com", "Alice")
     group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
