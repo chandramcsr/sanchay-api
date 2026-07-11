@@ -41,6 +41,18 @@ def test_yearly_occurrence():
     assert occurrence_at(start_date="2026-03-10", frequency="yearly", n=3) == "2029-03-10"
 
 
+def test_quarterly_occurrence():
+    assert occurrence_at(start_date="2026-01-15", frequency="quarterly", n=0) == "2026-01-15"
+    assert occurrence_at(start_date="2026-01-15", frequency="quarterly", n=1) == "2026-04-15"
+    assert occurrence_at(start_date="2026-01-15", frequency="quarterly", n=4) == "2027-01-15"  # 4 quarters = back to the same month a year later
+
+
+def test_quarterly_on_the_31st_clamps_correctly():
+    # Jan 31 -> Apr 30 (April has no 31st) -> Jul 31 -> back to the real anchor
+    assert occurrence_at(start_date="2026-01-31", frequency="quarterly", n=1) == "2026-04-30"
+    assert occurrence_at(start_date="2026-01-31", frequency="quarterly", n=2) == "2026-07-31"
+
+
 def test_unknown_frequency_raises():
     with pytest.raises(ValueError):
         occurrence_at(start_date="2026-01-01", frequency="daily", n=0)
@@ -82,3 +94,9 @@ def test_end_date_exactly_on_a_boundary_is_inclusive():
 def test_weekly_catch_up_over_several_missed_weeks():
     result = due_occurrences(start_date="2026-06-01", frequency="weekly", end_date=None, last_materialized="2026-06-08", today="2026-06-29")
     assert result == ["2026-06-15", "2026-06-22", "2026-06-29"]
+
+
+def test_quarterly_catch_up():
+    # Catching up on a quarterly rule that hasn't been read since Q1.
+    result = due_occurrences(start_date="2026-01-15", frequency="quarterly", end_date=None, last_materialized="2026-01-15", today="2026-08-01")
+    assert result == ["2026-04-15", "2026-07-15"]

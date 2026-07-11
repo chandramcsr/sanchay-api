@@ -202,7 +202,7 @@ class RecurringRuleCreateRequest(BaseModel):
     participant_ids: list[str] = Field(default_factory=list)
     pending_participants: list[MemberInvite] = Field(default_factory=list)
     participant_values: dict[str, float] = Field(default_factory=dict)
-    frequency: Literal["weekly", "biweekly", "monthly", "yearly"]
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     start_date: str  # YYYY-MM-DD
     end_date: str | None = None
 

@@ -1033,7 +1033,7 @@ async def delete_group(db: AsyncSession, *, group_id: str) -> None:
 
 # ---------- recurring shared expenses ----------
 
-VALID_FREQUENCIES = {"weekly", "biweekly", "monthly", "yearly"}
+VALID_FREQUENCIES = {"weekly", "biweekly", "monthly", "quarterly", "yearly"}
 
 
 async def create_recurring_rule(

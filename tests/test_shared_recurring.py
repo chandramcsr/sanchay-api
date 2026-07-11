@@ -155,6 +155,20 @@ async def test_resuming_a_paused_rule_catches_up_again(client):
     assert resume_resp.json()["active"] is True
 
 
+async def test_quarterly_frequency_accepted_end_to_end(client):
+    alice_token, alice_id = await _signup(client, "rec11@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/recurring", headers=_auth(alice_token),
+        json={"description": "Car insurance", "amount": 450.00, "participant_ids": [alice_id], "pending_participants": [], "frequency": "quarterly", "start_date": _today()},
+    )
+    assert r.status_code == 201
+    assert r.json()["frequency"] == "quarterly"
+    assert r.json()["last_materialized"] == _today()
+
+
 async def test_list_recurring_rules_for_a_group(client):
     alice_token, alice_id = await _signup(client, "rec8@example.com", "Alice")
     group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})

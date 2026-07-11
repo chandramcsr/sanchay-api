@@ -18,7 +18,7 @@ means rent either double-charges or silently skips a month).
 from calendar import monthrange
 from datetime import date, timedelta
 
-Frequency = str  # "weekly" | "biweekly" | "monthly" | "yearly"
+Frequency = str  # "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly"
 
 
 def _parse_ymd(s: str) -> date:
@@ -60,6 +60,8 @@ def occurrence_at(start_date: str, frequency: Frequency, n: int) -> str:
         return _to_ymd(_parse_ymd(start_date) + timedelta(days=14 * n))
     if frequency == "monthly":
         return _add_months_anchored(start_date, n)
+    if frequency == "quarterly":
+        return _add_months_anchored(start_date, 3 * n)
     if frequency == "yearly":
         return _add_months_anchored(start_date, 12 * n)
     raise ValueError(f"Unknown frequency: {frequency}")

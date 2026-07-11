@@ -68,7 +68,7 @@ class SharedRecurringRule(Base):
     # SharedExpenseCreateRequest.participant_values.
     participant_values: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
-    frequency: Mapped[str] = mapped_column(String(20), nullable=False)  # weekly | biweekly | monthly | yearly
+    frequency: Mapped[str] = mapped_column(String(20), nullable=False)  # weekly | biweekly | monthly | quarterly | yearly
     start_date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD, also the schedule's anchor
     end_date: Mapped[str | None] = mapped_column(String(10), nullable=True)  # inclusive; no occurrences after this
     last_materialized: Mapped[str | None] = mapped_column(String(10), nullable=True)  # YYYY-MM-DD of the most recent occurrence turned into a real SharedExpense
