@@ -10,6 +10,7 @@ from app.models.settlement import Settlement
 from app.models.shared_expense import SharedExpense
 from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
+from app.models.shared_recurring_rule import SharedRecurringRule
 from app.models.user import User
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "SharedExpenseComment",
     "Settlement",
     "PendingGroupInvite",
+    "SharedRecurringRule",
 ]

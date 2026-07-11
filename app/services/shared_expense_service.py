@@ -53,7 +53,9 @@ from app.models.settlement import Settlement
 from app.models.shared_expense import SharedExpense
 from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
+from app.models.shared_recurring_rule import SharedRecurringRule
 from app.models.user import User
+from app.services.recurring_date_math import due_occurrences
 
 
 def email_reference(email: str) -> str:
@@ -664,6 +666,11 @@ async def freeze_user_references(db: AsyncSession, *, user_id: str) -> None:
             if expense.created_by == user_id:
                 expense.created_by = None
 
+    result = await db.execute(select(SharedRecurringRule).where(SharedRecurringRule.created_by == user_id))
+    for rule in result.scalars().all():
+        rule.created_by_name_snapshot = name
+        rule.created_by = None
+
     for settlement_result in [
         await db.execute(select(Settlement).where(Settlement.from_user_id == user_id)),
         await db.execute(select(Settlement).where(Settlement.to_user_id == user_id)),
@@ -1022,3 +1029,151 @@ async def delete_group(db: AsyncSession, *, group_id: str) -> None:
     if group is not None:
         await db.delete(group)
     await db.commit()
+
+
+# ---------- recurring shared expenses ----------
+
+VALID_FREQUENCIES = {"weekly", "biweekly", "monthly", "yearly"}
+
+
+async def create_recurring_rule(
+    db: AsyncSession,
+    *,
+    group_id: str,
+    created_by: str,
+    description: str,
+    amount: Decimal,
+    category: str,
+    split_type: str,
+    participant_ids: list[str],
+    pending_participants: list[dict] | None,
+    participant_values: dict[str, float] | None,
+    frequency: str,
+    start_date: str,
+    end_date: str | None,
+) -> SharedRecurringRule:
+    """
+    Creates the SCHEDULE only — no SharedExpense rows exist yet from
+    this call. materialize_due_shared_expenses() is what turns due
+    occurrences into real expenses, called lazily whenever a group's
+    expenses/balances are actually read (see that function's own
+    docstring for why lazy catch-up, not a background job).
+    """
+    if frequency not in VALID_FREQUENCIES:
+        raise ValueError(f"Unknown frequency: {frequency}")
+
+    creator = await db.get(User, created_by)
+    rule = SharedRecurringRule(
+        group_id=group_id,
+        created_by=created_by,
+        created_by_name_snapshot=creator.display_name if creator else "Unknown",
+        description=description,
+        amount=amount,
+        category=category,
+        split_type=split_type,
+        participant_ids=participant_ids,
+        pending_participants=pending_participants or [],
+        participant_values={k: str(v) for k, v in (participant_values or {}).items()},
+        frequency=frequency,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+    return rule
+
+
+async def list_recurring_rules(db: AsyncSession, *, group_id: str) -> list[SharedRecurringRule]:
+    result = await db.execute(
+        select(SharedRecurringRule).where(SharedRecurringRule.group_id == group_id).order_by(SharedRecurringRule.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def set_recurring_rule_active(db: AsyncSession, *, rule_id: str, active: bool) -> SharedRecurringRule | None:
+    """
+    Pausing/resuming, not deleting — a paused rule (e.g. a subscription
+    on hold, a roommate moving out temporarily) stops generating new
+    expenses but its own row and every expense it already materialized
+    stay exactly as they are. Real deletion isn't offered at all: the
+    rule itself is just a schedule with no money attached directly to
+    IT (the materialized SharedExpense rows are the real records, and
+    those already have their own independent delete path) — nothing
+    is lost by leaving an inactive rule around indefinitely, and
+    "why did rent stop appearing" is a more confusing question to
+    answer from silence than from a rule that's visibly still there,
+    just paused.
+    """
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        return None
+    rule.active = active
+    await db.commit()
+    await db.refresh(rule)
+    return rule
+
+
+async def materialize_due_shared_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:
+    """
+    Lazy catch-up, exactly like the personal ledger's client-side
+    engine: called whenever a group's expenses or balances are read
+    (not on a schedule/cron — no background job infrastructure exists
+    for this project, and lazy catch-up needs none, because whoever
+    next opens the group triggers it and every due occurrence since
+    last_materialized gets generated with its correct historical date
+    regardless of how long it's been). Returns whatever new expenses
+    were just created, in case a caller wants to surface "3 new bills
+    were added" -- most callers can ignore the return value.
+
+    Each occurrence becomes a real SharedExpense via
+    create_shared_expense() -- the exact same function a person
+    manually adding an expense calls -- not a parallel code path. A
+    materialized rent payment IS a shared expense in every way once
+    created; nothing downstream needs to know or care that it came
+    from a rule.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    result = await db.execute(
+        select(SharedRecurringRule).where(SharedRecurringRule.group_id == group_id, SharedRecurringRule.active.is_(True))
+    )
+    rules = list(result.scalars().all())
+
+    created: list[SharedExpense] = []
+    for rule in rules:
+        if rule.created_by is None:
+            # Creator's account was deleted (frozen, not cascaded --
+            # see freeze_user_references) -- no live payer to attribute
+            # new occurrences to. The rule and its past expenses stay
+            # exactly as they are; it simply stops generating new ones,
+            # same spirit as an explicitly paused rule.
+            continue
+
+        occurrences = due_occurrences(
+            start_date=rule.start_date, frequency=rule.frequency, end_date=rule.end_date,
+            last_materialized=rule.last_materialized, today=today,
+        )
+        if not occurrences:
+            continue
+
+        participant_values = {k: Decimal(v) for k, v in rule.participant_values.items()} if rule.participant_values else None
+        for occ_date in occurrences:
+            expense = await create_shared_expense(
+                db,
+                group_id=group_id,
+                paid_by=rule.created_by,
+                description=rule.description,
+                amount=Decimal(str(rule.amount)),
+                expense_date=occ_date,
+                participant_ids=rule.participant_ids,
+                pending_participants=rule.pending_participants,
+                category=rule.category,
+                split_type=rule.split_type,
+                participant_values=participant_values,
+            )
+            created.append(expense)
+            rule.last_materialized = occ_date
+
+    if created:
+        await db.commit()
+    return created

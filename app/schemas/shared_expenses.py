@@ -190,3 +190,54 @@ class BalanceOut(BaseModel):
     name: str
     you_owe_them: str  # decimal string, "0.00" if not applicable
     they_owe_you: str  # decimal string, "0.00" if not applicable
+
+
+# ---------- recurring shared expenses ----------
+
+class RecurringRuleCreateRequest(BaseModel):
+    description: str
+    amount: float = Field(gt=0)
+    category: str = "Other"
+    split_type: Literal["equal", "shares", "percentage", "exact"] = "equal"
+    participant_ids: list[str] = Field(default_factory=list)
+    pending_participants: list[MemberInvite] = Field(default_factory=list)
+    participant_values: dict[str, float] = Field(default_factory=dict)
+    frequency: Literal["weekly", "biweekly", "monthly", "yearly"]
+    start_date: str  # YYYY-MM-DD
+    end_date: str | None = None
+
+    @field_validator("description")
+    @classmethod
+    def description_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Description is required")
+        return v
+
+    @field_validator("pending_participants")
+    @classmethod
+    def at_least_one_participant_somewhere(cls, v, info):
+        if not info.data.get("participant_ids") and not v:
+            raise ValueError("At least one participant is required")
+        return v
+
+
+class RecurringRuleOut(BaseModel):
+    id: str
+    group_id: str
+    created_by: str | None
+    created_by_name: str
+    description: str
+    amount: str
+    category: str
+    split_type: str
+    frequency: str
+    start_date: str
+    end_date: str | None
+    last_materialized: str | None
+    active: bool
+    created_at: datetime
+
+
+class SetRecurringRuleActiveRequest(BaseModel):
+    active: bool

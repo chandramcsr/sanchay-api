@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.models.shared_recurring_rule import SharedRecurringRule
 from app.models.user import User
 from app.repositories import user_repository
 from app.schemas.shared_expenses import (
@@ -30,6 +31,9 @@ from app.schemas.shared_expenses import (
     GroupMemberOut,
     GroupOut,
     GroupRenameRequest,
+    RecurringRuleCreateRequest,
+    RecurringRuleOut,
+    SetRecurringRuleActiveRequest,
     SettlementCreateRequest,
     SettlementOut,
     SharedExpenseCreateRequest,
@@ -311,12 +315,83 @@ async def list_group_expenses(
     group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[SharedExpenseOut]:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    await svc.materialize_due_shared_expenses(db, group_id=group_id)
     expenses = await svc.get_group_expenses(db, group_id=group_id)
     result = []
     for e in expenses:
         splits = await svc.get_expense_splits(db, expense_id=e.id)
         result.append(await _expense_to_out(db, e, splits))
     return result
+
+
+def _rule_to_out(rule) -> RecurringRuleOut:
+    return RecurringRuleOut(
+        id=rule.id,
+        group_id=rule.group_id,
+        created_by=rule.created_by,
+        created_by_name=rule.created_by_name_snapshot,
+        description=rule.description,
+        amount=str(rule.amount),
+        category=rule.category,
+        split_type=rule.split_type,
+        frequency=rule.frequency,
+        start_date=rule.start_date,
+        end_date=rule.end_date,
+        last_materialized=rule.last_materialized,
+        active=rule.active,
+        created_at=rule.created_at,
+    )
+
+
+@router.post("/groups/{group_id}/recurring", response_model=RecurringRuleOut, status_code=status.HTTP_201_CREATED)
+async def create_recurring_rule(
+    group_id: str, payload: RecurringRuleCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> RecurringRuleOut:
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    try:
+        rule = await svc.create_recurring_rule(
+            db,
+            group_id=group_id,
+            created_by=current_user.id,
+            description=payload.description,
+            amount=_to_decimal(payload.amount, "amount"),
+            category=payload.category,
+            split_type=payload.split_type,
+            participant_ids=payload.participant_ids,
+            pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants],
+            participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()},
+            frequency=payload.frequency,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+        )
+    except SplitValidationError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # A newly created rule may already have occurrences due (e.g. start_date
+    # in the past) — materialize immediately rather than waiting for the
+    # next unrelated read of this group's expenses/balances.
+    await svc.materialize_due_shared_expenses(db, group_id=group_id)
+    return _rule_to_out(rule)
+
+
+@router.get("/groups/{group_id}/recurring", response_model=list[RecurringRuleOut])
+async def list_recurring_rules(
+    group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[RecurringRuleOut]:
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    rules = await svc.list_recurring_rules(db, group_id=group_id)
+    return [_rule_to_out(r) for r in rules]
+
+
+@router.patch("/recurring/{rule_id}/active", response_model=RecurringRuleOut)
+async def set_recurring_rule_active(
+    rule_id: str, payload: SetRecurringRuleActiveRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> RecurringRuleOut:
+    rule = await db.get(SharedRecurringRule, rule_id)
+    if rule is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Recurring rule not found")
+    await _require_group_member(db, group_id=rule.group_id, user_id=current_user.id)
+    updated = await svc.set_recurring_rule_active(db, rule_id=rule_id, active=payload.active)
+    return _rule_to_out(updated)
 
 
 async def _require_expense_access(db: AsyncSession, *, expense_id: str, user_id: str):
@@ -445,6 +520,8 @@ async def record_settlement(
 
 @router.get("/balances", response_model=list[BalanceOut])
 async def my_balances(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[BalanceOut]:
+    for group in await svc.get_user_groups(db, user_id=current_user.id):
+        await svc.materialize_due_shared_expenses(db, group_id=group.id)
     balances = await svc.get_all_balances(db, user_id=current_user.id)
     result = []
     for b in balances:
