@@ -84,12 +84,24 @@ class SharedExpenseCreateRequest(BaseModel):
     # a share count, a percentage (0-100), or an exact dollar amount.
     participant_values: dict[str, float] = Field(default_factory=dict)
     # Who paid — defaults to the caller if omitted. Can be set to any
-    # OTHER real member's user_id too (see the router module's own
-    # docstring for the deliberate trust tradeoff this represents).
-    # Router validates this against real group membership; a pending
-    # (not-yet-signed-up) invite can never be named as payer — there's
-    # no real account for them to have actually paid anything with.
+    # OTHER real member's user_id (see the router module's own
+    # docstring for the deliberate trust tradeoff this represents), OR
+    # paid_by_pending can name someone who hasn't signed up yet (same
+    # {email, name} shape as pending_participants) — invited to the
+    # group the same way a new pending PARTICIPANT already is, and
+    # reconnected to their real account automatically if/when they
+    # sign up (reconnect_by_email already handles this — it was
+    # already correctly written for this case, just never reachable
+    # before this field existed to trigger it).
     paid_by: str | None = None
+    paid_by_pending: MemberInvite | None = None
+
+    @field_validator("paid_by_pending")
+    @classmethod
+    def not_both_paid_by_fields(cls, v, info):
+        if v is not None and info.data.get("paid_by"):
+            raise ValueError("Set either paid_by or paid_by_pending, not both")
+        return v
 
     @field_validator("description")
     @classmethod

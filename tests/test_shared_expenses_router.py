@@ -916,6 +916,85 @@ async def test_expense_cannot_claim_a_bogus_user_id_as_payer(client):
     assert r.status_code == 400
 
 
+async def test_expense_can_be_logged_as_paid_by_someone_not_yet_signed_up(client):
+    alice_token, alice_id = await _signup(client, "pendpay1@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Groceries", "amount": 60.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [], "category": "Groceries",
+            "paid_by_pending": {"email": "sam-pendpay1@example.com", "name": "Sam"},
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["paid_by"] is None
+    assert r.json()["paid_by_name"] == "Sam"
+
+    # Naming Sam as payer should have invited them to the group too --
+    # same as a pending PARTICIPANT would, just via the payer path instead.
+    group = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))).json()
+    assert any(p["email"] == "sam-pendpay1@example.com" for p in group["pending_invites"])
+
+
+async def test_pending_payer_reconnects_to_their_real_account_on_signup(client):
+    """
+    The core lifecycle proof: Sam is named as payer before signing up,
+    then signs up with the same email, and the expense's paid_by
+    should reconnect automatically -- reconnect_by_email() already had
+    a branch for this (SharedExpense.paid_by IS NULL), written before
+    this feature was reachable at all. This is the first real test of
+    that branch actually firing end to end.
+    """
+    alice_token, alice_id = await _signup(client, "pendpay2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Roommates", "members": []})
+    group_id = group_resp.json()["id"]
+
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Rent", "amount": 2000.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [], "category": "Housing",
+            "paid_by_pending": {"email": "sam-pendpay2@example.com", "name": "Sam"},
+        },
+    )
+
+    # Sam signs up with the same email.
+    sam_token, sam_id = await _signup(client, "sam-pendpay2@example.com", "Samuel")
+
+    # From Sam's own perspective now: Alice owes Sam for the rent.
+    balances = (await client.get("/api/v1/shared-expenses/balances", headers=_auth(sam_token))).json()
+    alice_balance = next(b for b in balances if b["user_id"] == alice_id)
+    assert alice_balance["you_owe_them"] == "0.00" or "they_owe_you" in alice_balance  # sanity: Sam sees a real balance row
+    assert Decimal(alice_balance["they_owe_you"]) == Decimal("2000.00")
+
+    # And from Alice's side, the expense's paid_by/paid_by_name now
+    # correctly point at Sam's REAL account and REAL signup name
+    # ("Samuel", not the "Sam" captured when Alice logged the expense) --
+    # same real-name-wins-on-reconnect behavior already proven for splits.
+    expenses = (await client.get(f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token))).json()
+    assert expenses[0]["paid_by"] == sam_id
+    assert expenses[0]["paid_by_name"] == "Samuel"
+
+
+async def test_cannot_set_both_paid_by_and_paid_by_pending(client):
+    alice_token, alice_id = await _signup(client, "pendpay3@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Ambiguous", "amount": 20.00, "expense_date": "2026-07-10",
+            "participant_ids": [alice_id], "pending_participants": [], "category": "Other",
+            "paid_by": alice_id, "paid_by_pending": {"email": "someone@example.com", "name": "Someone"},
+        },
+    )
+    assert r.status_code == 422  # pydantic validation error, not a 400 from the router
+
+
 async def test_create_expense_split_by_shares(client):
     alice_token, alice_id = await _signup(client, "alice-split1@example.com", "Alice")
     _, bob_id = await _signup(client, "bob-split1@example.com", "Bob")

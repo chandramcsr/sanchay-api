@@ -279,7 +279,7 @@ async def create_shared_expense(
     db: AsyncSession,
     *,
     group_id: str,
-    paid_by: str,
+    paid_by: str | None,
     description: str,
     amount: Decimal,
     expense_date: str,
@@ -288,6 +288,7 @@ async def create_shared_expense(
     category: str = "Other",
     split_type: str = "equal",
     participant_values: dict[str, Decimal] | None = None,
+    paid_by_pending: dict | None = None,
 ) -> SharedExpense:
     """
     pending_participants is a list of {"email": str, "name": str} for
@@ -308,13 +309,31 @@ async def create_shared_expense(
     email. No new reconciliation logic needed for that half of the
     feature; the existing architecture already generalizes to "never
     had an account yet" as well as "had one, deleted it."
+
+    paid_by_pending (same {"email", "name"} shape) is the identical
+    idea applied to who PAID rather than who's splitting it — exactly
+    one of paid_by/paid_by_pending should be set by the time this is
+    called (the router enforces that via the schema validator; this
+    function just trusts it). reconnect_by_email() already has a
+    branch for SharedExpense rows with paid_by IS NULL — it was
+    written correctly for this case from early on, just never
+    reachable until this parameter existed to produce such a row.
     """
-    payer = await db.get(User, paid_by)
+    if paid_by_pending:
+        payer_email_ref = email_reference(paid_by_pending["email"])
+        payer_name = paid_by_pending["name"]
+        resolved_paid_by = None
+    else:
+        payer = await db.get(User, paid_by)
+        payer_email_ref = email_reference(payer.email) if payer else ""
+        payer_name = payer.display_name if payer else "Unknown"
+        resolved_paid_by = paid_by
+
     expense = SharedExpense(
         group_id=group_id,
-        paid_by=paid_by,
-        paid_by_email_ref=email_reference(payer.email) if payer else "",
-        paid_by_name_snapshot=payer.display_name if payer else "Unknown",
+        paid_by=resolved_paid_by,
+        paid_by_email_ref=payer_email_ref,
+        paid_by_name_snapshot=payer_name,
         description=description,
         category=category,
         split_type=split_type,

@@ -290,9 +290,11 @@ async def create_expense(
     # Defaults to the caller when omitted (the ORIGINAL, still-common
     # case: you're logging your own expense). See this module's own
     # docstring for the deliberate tradeoff in allowing any OTHER real
-    # member to be named here too.
-    paid_by = payload.paid_by or current_user.id
-    if paid_by not in group_member_ids:
+    # member to be named here too. paid_by_pending is a separate path
+    # entirely (validated as mutually exclusive with paid_by by the
+    # schema) — a real user_id makes no sense to require in that case.
+    paid_by = None if payload.paid_by_pending else (payload.paid_by or current_user.id)
+    if paid_by is not None and paid_by not in group_member_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="paid_by must be a member of this group")
 
     group = await svc.get_group(db, group_id=group_id)
@@ -307,12 +309,20 @@ async def create_expense(
             db, background_tasks, group_id=group_id, email=p.email, name=p.name,
             invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
         )
+    # Naming someone not yet in the group as the PAYER invites them the
+    # exact same way — same reasoning as pending participants above,
+    # just applied to who paid instead of who's splitting it.
+    if payload.paid_by_pending:
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=group_id, email=payload.paid_by_pending.email, name=payload.paid_by_pending.name,
+            invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+        )
 
     try:
         expense = await svc.create_shared_expense(
             db,
             group_id=group_id,
-            paid_by=paid_by,  # defaults to the caller, but may be any validated group member — see module docstring
+            paid_by=paid_by,  # defaults to the caller, but may be any validated group member, or None when paid_by_pending is set — see module docstring
             description=payload.description,
             amount=_to_decimal(payload.amount, "amount"),
             expense_date=payload.expense_date,
@@ -321,6 +331,7 @@ async def create_expense(
             category=payload.category,
             split_type=payload.split_type,
             participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()},
+            paid_by_pending={"email": payload.paid_by_pending.email, "name": payload.paid_by_pending.name} if payload.paid_by_pending else None,
         )
     except SplitValidationError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
