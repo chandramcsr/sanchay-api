@@ -131,6 +131,19 @@ class SharedExpenseEditRequest(BaseModel):
     pending_participants: list[MemberInvite] | None = None
     split_type: Literal["equal", "shares", "percentage", "exact"] | None = None
     participant_values: dict[str, float] | None = None
+    # Same shape and same mutual-exclusivity as the create request —
+    # None on both means "leave paid_by exactly as it is," not
+    # "reset to the caller"; unlike create, edit has no sensible
+    # default to fall back to.
+    paid_by: str | None = None
+    paid_by_pending: MemberInvite | None = None
+
+    @field_validator("paid_by_pending")
+    @classmethod
+    def not_both_paid_by_fields(cls, v, info):
+        if v is not None and info.data.get("paid_by"):
+            raise ValueError("Set either paid_by or paid_by_pending, not both")
+        return v
 
 
 class SplitOut(BaseModel):

@@ -471,6 +471,8 @@ async def edit_shared_expense(
     new_pending_participants: list[dict] | None = None,
     new_split_type: str | None = None,
     new_participant_values: dict[str, Decimal] | None = None,
+    new_paid_by: str | None = None,
+    new_paid_by_pending: dict | None = None,
 ) -> SharedExpense:
     """
     Corrects the ONE shared record and re-splits it — not a private
@@ -490,6 +492,14 @@ async def edit_shared_expense(
     excluded pending participants from ever getting their share
     recalculated when the amount changed, breaking the sum-equals-
     total guarantee. _write_splits doesn't have that bug.
+
+    new_paid_by/new_paid_by_pending: unlike participants, there's no
+    sensible "both None means clear it" — an expense always needs a
+    payer. Both None means "leave paid_by exactly as it is"; providing
+    either one changes it, same mutual exclusivity the schema already
+    enforces for create. Editing the payer never touches the split
+    amounts themselves (correcting WHO paid isn't the same claim as
+    correcting HOW MUCH or WHO owes what).
     """
     expense = await db.get(SharedExpense, expense_id)
     if expense is None:
@@ -502,6 +512,21 @@ async def edit_shared_expense(
     participants_changing = new_participant_ids is not None or new_pending_participants is not None
     amount_changing = new_amount is not None and new_amount != expense.amount
     split_config_changing = new_split_type is not None or new_participant_values is not None
+    paid_by_changing = new_paid_by is not None or new_paid_by_pending is not None
+
+    if paid_by_changing:
+        old_payer_name = expense.paid_by_name_snapshot
+        if new_paid_by_pending:
+            expense.paid_by = None
+            expense.paid_by_email_ref = email_reference(new_paid_by_pending["email"])
+            expense.paid_by_name_snapshot = new_paid_by_pending["name"]
+        else:
+            payer = await db.get(User, new_paid_by)
+            expense.paid_by = new_paid_by
+            expense.paid_by_email_ref = email_reference(payer.email) if payer else ""
+            expense.paid_by_name_snapshot = payer.display_name if payer else "Unknown"
+        if expense.paid_by_name_snapshot != old_payer_name:
+            changes.append(f"payer from {old_payer_name} to {expense.paid_by_name_snapshot}")
 
     if amount_changing:
         changes.append(f"amount from ${expense.amount:.2f} to ${new_amount:.2f}")

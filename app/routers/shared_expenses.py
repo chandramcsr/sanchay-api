@@ -452,23 +452,36 @@ async def edit_expense(
     new_amount = _to_decimal(payload.amount, "amount") if payload.amount is not None else None
 
     participants_changing = payload.participant_ids is not None or payload.pending_participants is not None
+    paid_by_changing = payload.paid_by is not None or payload.paid_by_pending is not None
+    group = None
+
+    if participants_changing or paid_by_changing:
+        group_member_ids = {m.user_id for m in await svc.get_group_members(db, group_id=expense.group_id) if m.user_id}
+        group = await svc.get_group(db, group_id=expense.group_id)
+
     if participants_changing:
         real_ids = payload.participant_ids or []
         pending = payload.pending_participants or []
         if not real_ids and not pending:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="At least one participant is required")
 
-        group_member_ids = {m.user_id for m in await svc.get_group_members(db, group_id=expense.group_id) if m.user_id}
         invalid = set(real_ids) - group_member_ids
         if invalid:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="All participants must be members of this group")
 
-        group = await svc.get_group(db, group_id=expense.group_id)
         for p in pending:
             await svc.ensure_pending_invite(
                 db, background_tasks, group_id=expense.group_id, email=p.email, name=p.name,
                 invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
             )
+
+    if payload.paid_by is not None and payload.paid_by not in group_member_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="paid_by must be a member of this group")
+    if payload.paid_by_pending:
+        await svc.ensure_pending_invite(
+            db, background_tasks, group_id=expense.group_id, email=payload.paid_by_pending.email, name=payload.paid_by_pending.name,
+            invited_by=current_user.id, group_name=group.name if group else "", frontend_url=settings.frontend_url,
+        )
 
     try:
         updated = await svc.edit_shared_expense(
@@ -479,6 +492,8 @@ async def edit_expense(
             new_pending_participants=[{"email": p.email, "name": p.name} for p in payload.pending_participants] if payload.pending_participants is not None else None,
             new_split_type=payload.split_type,
             new_participant_values={k: _to_decimal(v, "participant_values") for k, v in payload.participant_values.items()} if payload.participant_values is not None else None,
+            new_paid_by=payload.paid_by,
+            new_paid_by_pending={"email": payload.paid_by_pending.email, "name": payload.paid_by_pending.name} if payload.paid_by_pending else None,
         )
     except SplitValidationError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))

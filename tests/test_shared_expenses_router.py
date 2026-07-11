@@ -995,6 +995,91 @@ async def test_cannot_set_both_paid_by_and_paid_by_pending(client):
     assert r.status_code == 422  # pydantic validation error, not a 400 from the router
 
 
+async def test_edit_expense_can_change_paid_by_to_another_real_member(client):
+    alice_token, alice_id = await _signup(client, "editpay1@example.com", "Alice")
+    _, bob_id = await _signup(client, "editpay1b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "editpay1b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+    assert expense_resp.json()["paid_by"] == alice_id  # defaulted to caller
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"paid_by": bob_id})
+    assert r.status_code == 200
+    assert r.json()["paid_by"] == bob_id
+    assert r.json()["paid_by_name"] == "Bob"
+
+
+async def test_edit_expense_can_change_paid_by_to_a_pending_payer(client):
+    alice_token, alice_id = await _signup(client, "editpay2@example.com", "Alice")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(
+        f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token),
+        json={"paid_by_pending": {"email": "sam-editpay2@example.com", "name": "Sam"}},
+    )
+    assert r.status_code == 200
+    assert r.json()["paid_by"] is None
+    assert r.json()["paid_by_name"] == "Sam"
+
+
+async def test_editing_paid_by_does_not_touch_amount_or_splits(client):
+    alice_token, alice_id = await _signup(client, "editpay3@example.com", "Alice")
+    _, bob_id = await _signup(client, "editpay3b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "editpay3b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+    original_splits = {s["name"]: s["share_amount"] for s in expense_resp.json()["splits"]}
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"paid_by": bob_id})
+    assert r.json()["amount"] == "40.00"
+    assert {s["name"]: s["share_amount"] for s in r.json()["splits"]} == original_splits
+
+
+async def test_edit_expense_rejects_a_non_member_as_paid_by(client):
+    alice_token, alice_id = await _signup(client, "editpay4@example.com", "Alice")
+    _, outsider_id = await _signup(client, "editpay4outsider@example.com", "Outsider")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Solo", "members": []})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Coffee", "amount": 5.00, "expense_date": "2026-07-10", "participant_ids": [alice_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    r = await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"paid_by": outsider_id})
+    assert r.status_code == 400
+
+
+async def test_editing_paid_by_logs_a_system_comment(client):
+    alice_token, alice_id = await _signup(client, "editpay5@example.com", "Alice")
+    _, bob_id = await _signup(client, "editpay5b@example.com", "Bob")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Apartment", "members": [{"email": "editpay5b@example.com", "name": "Bob"}]})
+    group_id = group_resp.json()["id"]
+    expense_resp = await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 40.00, "expense_date": "2026-07-10", "participant_ids": [alice_id, bob_id], "pending_participants": [], "category": "Dining Out"},
+    )
+    expense_id = expense_resp.json()["id"]
+
+    await client.patch(f"/api/v1/shared-expenses/expenses/{expense_id}", headers=_auth(alice_token), json={"paid_by": bob_id})
+    comments = (await client.get(f"/api/v1/shared-expenses/expenses/{expense_id}/comments", headers=_auth(alice_token))).json()
+    assert any("payer" in c["body"] and c["is_system"] for c in comments)
+
+
 async def test_create_expense_split_by_shares(client):
     alice_token, alice_id = await _signup(client, "alice-split1@example.com", "Alice")
     _, bob_id = await _signup(client, "bob-split1@example.com", "Bob")
