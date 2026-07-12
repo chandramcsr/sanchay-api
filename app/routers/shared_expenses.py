@@ -230,6 +230,8 @@ async def get_invite_preview(request: Request, invite_id: str, db: AsyncSession 
     been invited to X by Y" before they've signed in. See
     svc.get_invite_preview's docstring for why this is safe.
     """
+    if not settings.invite_links_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")
     preview = await svc.get_invite_preview(db, invite_id=invite_id)
     if preview is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")
@@ -242,6 +244,8 @@ async def accept_invite(
     request: Request, invite_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> GroupOut:
     """Authenticated — requires the caller to have actually signed in or signed up first, not just held the link."""
+    if not settings.invite_links_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")
     group = await svc.accept_invite_link(db, invite_id=invite_id, user=current_user)
     if group is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")

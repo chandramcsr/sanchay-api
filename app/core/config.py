@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # arbitrary addresses is confirmed working end-to-end.
     require_email_verification: bool = False
 
+    # Feature switch for the shareable group-invite-link feature
+    # (GET /invites/{id}, POST /invites/{id}/accept). Default False —
+    # built and fully tested, but deliberately held back until the
+    # frontend UI around it (copy-link button, /join/{id} landing
+    # flow) is ready to ship alongside it. Both endpoints 404 when
+    # this is off, indistinguishable from a genuinely nonexistent
+    # route — not a 403 or a "coming soon" message, so a disabled
+    # feature reveals nothing about its own existence.
+    invite_links_enabled: bool = False
+
     # Email (password reset). Optional on purpose: if unset, the reset
     # link is logged instead of emailed — keeps local dev/tests working
     # with zero config, same pattern as everything else in this app
