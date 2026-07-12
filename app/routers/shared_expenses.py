@@ -22,13 +22,14 @@ not reverting the flexibility.
 
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.core.limiter import limiter
 from app.models.shared_recurring_rule import SharedRecurringRule
 from app.models.user import User
 from app.repositories import user_repository
@@ -41,6 +42,7 @@ from app.schemas.shared_expenses import (
     GroupMemberOut,
     GroupOut,
     GroupRenameRequest,
+    InvitePreviewOut,
     MemberInvite,
     RecurringRuleCreateRequest,
     RecurringRuleEditRequest,
@@ -215,6 +217,34 @@ async def remove_pending_invite(
     group = await svc.get_group(db, group_id=group_id)
     if group is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Group not found")
+    return await _group_to_out(db, group)
+
+
+@router.get("/invites/{invite_id}", response_model=InvitePreviewOut)
+@limiter.limit("30/minute")
+async def get_invite_preview(request: Request, invite_id: str, db: AsyncSession = Depends(get_db)) -> InvitePreviewOut:
+    """
+    Deliberately unauthenticated and deliberately NOT gated by
+    _require_group_member — the whole point is that someone with no
+    account yet, who isn't a member of anything, needs to see "you've
+    been invited to X by Y" before they've signed in. See
+    svc.get_invite_preview's docstring for why this is safe.
+    """
+    preview = await svc.get_invite_preview(db, invite_id=invite_id)
+    if preview is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")
+    return InvitePreviewOut(**preview)
+
+
+@router.post("/invites/{invite_id}/accept", response_model=GroupOut)
+@limiter.limit("30/minute")
+async def accept_invite(
+    request: Request, invite_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> GroupOut:
+    """Authenticated — requires the caller to have actually signed in or signed up first, not just held the link."""
+    group = await svc.accept_invite_link(db, invite_id=invite_id, user=current_user)
+    if group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="This invite link is invalid or has already been used.")
     return await _group_to_out(db, group)
 
 

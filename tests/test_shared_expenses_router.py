@@ -19,7 +19,7 @@ async def test_create_group_with_unknown_email_pends_an_invite_instead_of_failin
     token, _ = await _signup(client, "alice-ge1@example.com", "Alice")
     r = await client.post("/api/v1/shared-expenses/groups", headers=_auth(token), json={"name": "Roommates", "members": [{"email": "nobody-here@example.com", "name": ""}]})
     assert r.status_code == 201
-    assert r.json()["pending_invites"] == [{"name": "nobody-here", "email": "nobody-here@example.com"}]
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("nobody-here", "nobody-here@example.com")]
 
 
 async def test_create_group_succeeds_with_real_members(client):
@@ -267,7 +267,7 @@ async def test_inviting_an_unknown_email_creates_a_pending_invite_not_an_error(c
     )
     assert r.status_code == 201  # no longer a 400
     body = r.json()
-    assert body["pending_invites"] == [{"name": "not-yet-signed-up-inv1", "email": "not-yet-signed-up-inv1@example.com"}]
+    assert [(p["name"], p["email"]) for p in body["pending_invites"]] == [("not-yet-signed-up-inv1", "not-yet-signed-up-inv1@example.com")]
     member_ids = [m["user_id"] for m in body["members"]]
     assert len(member_ids) == 1  # just Alice so far — the invitee isn't a member YET
 
@@ -344,7 +344,7 @@ async def test_invite_email_failure_does_not_break_group_creation(client, monkey
         json={"name": "Resilient Group", "members": [{"email": "someone-new-emailfail@example.com", "name": ""}]},
     )
     assert r.status_code == 201  # the request succeeds despite the email exploding
-    assert r.json()["pending_invites"] == [{"name": "someone-new-emailfail", "email": "someone-new-emailfail@example.com"}]  # the invite row is real
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("someone-new-emailfail", "someone-new-emailfail@example.com")]  # the invite row is real
 
     # And the invite still works end to end — signup joins the group,
     # proving the failed EMAIL didn't orphan the actual invite.
@@ -442,7 +442,7 @@ async def test_add_a_member_who_has_no_account_creates_a_pending_invite(client):
 
     r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "future-roommate-am2@example.com"})
     assert r.status_code == 201
-    assert r.json()["pending_invites"] == [{"name": "future-roommate-am2", "email": "future-roommate-am2@example.com"}]
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("future-roommate-am2", "future-roommate-am2@example.com")]
 
     # And it works end to end, same as an invite made at creation time.
     signup_resp = await client.post("/api/v1/auth/signup", json={"email": "future-roommate-am2@example.com", "password": "hunter2222", "display_name": "Later"})
@@ -468,7 +468,7 @@ async def test_adding_the_same_pending_email_twice_does_not_duplicate_the_invite
 
     await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "twice-am4@example.com"})
     r = await client.post(f"/api/v1/shared-expenses/groups/{group_id}/members", headers=_auth(alice_token), json={"email": "twice-am4@example.com"})
-    assert r.json()["pending_invites"] == [{"name": "twice-am4", "email": "twice-am4@example.com"}]  # exactly one, not two
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("twice-am4", "twice-am4@example.com")]  # exactly one, not two
 
 
 async def test_non_member_cannot_add_someone_to_a_group(client):
@@ -489,7 +489,7 @@ async def test_pending_invite_gets_the_real_name_given_not_the_email(client):
         "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
         json={"name": "Roommates", "members": [{"email": "sam-name1@example.com", "name": "Sam"}]},
     )
-    assert r.json()["pending_invites"] == [{"name": "Sam", "email": "sam-name1@example.com"}]
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("Sam", "sam-name1@example.com")]
 
 
 async def test_pending_invite_falls_back_to_email_local_part_when_no_name_given(client):
@@ -498,7 +498,7 @@ async def test_pending_invite_falls_back_to_email_local_part_when_no_name_given(
         "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
         json={"name": "Roommates", "members": [{"email": "just-an-email-name2@example.com"}]},
     )
-    assert r.json()["pending_invites"] == [{"name": "just-an-email-name2", "email": "just-an-email-name2@example.com"}]
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("just-an-email-name2", "just-an-email-name2@example.com")]
 
 
 async def test_split_an_expense_with_someone_who_has_no_account_yet(client):
@@ -523,7 +523,7 @@ async def test_split_an_expense_with_someone_who_has_no_account_yet(client):
 
     # Splitting with someone new invites them, same as adding them directly.
     group_check = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
-    assert group_check.json()["pending_invites"] == [{"name": "Sam", "email": "sam-pp1@example.com"}]
+    assert [(p["name"], p["email"]) for p in group_check.json()["pending_invites"]] == [("Sam", "sam-pp1@example.com")]
 
 
 async def test_signing_up_reconnects_a_pending_participant_split_automatically(client):
@@ -654,7 +654,7 @@ async def test_cannot_remove_a_pending_invite_with_real_expense_history(client):
     assert r.status_code == 409
 
     group_check = await client.get(f"/api/v1/shared-expenses/groups/{group_id}", headers=_auth(alice_token))
-    assert group_check.json()["pending_invites"] == [{"name": "Sam", "email": "sam-rm4@example.com"}]
+    assert [(p["name"], p["email"]) for p in group_check.json()["pending_invites"]] == [("Sam", "sam-rm4@example.com")]
 
 
 async def test_non_member_cannot_remove_anyone_from_a_group(client):

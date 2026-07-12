@@ -56,8 +56,25 @@ class GroupMemberOut(BaseModel):
 
 
 class PendingInviteOut(BaseModel):
+    id: str  # PendingGroupInvite.id — doubles as the shareable invite-link token
     name: str
     email: str
+
+
+class InvitePreviewOut(BaseModel):
+    """
+    The public-endpoint response for GET /invites/{id} — deliberately
+    only these three fields. Enough to render "You've been invited to
+    join X by Y" and pre-fill the invitee's own name into signup;
+    nothing financial, nothing that would matter if it leaked to
+    someone who was never actually sent the link (they'd need the
+    unguessable id to reach this at all, and invitee_name is just
+    whatever the inviter typed for THIS specific invite — not a
+    lookup of anyone's real account).
+    """
+    group_name: str
+    inviter_name: str
+    invitee_name: str
 
 
 class GroupOut(BaseModel):

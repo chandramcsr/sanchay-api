@@ -115,4 +115,4 @@ async def test_a_pending_invites_avatar_is_null_since_theres_no_real_account_yet
     # Sam is in pending_invites (a different shape entirely, no
     # avatar_data field at all) rather than members — nothing to
     # assert null on beyond confirming they're not miscategorized.
-    assert r.json()["pending_invites"] == [{"name": "Sam", "email": "sam-avatar9@example.com"}]
+    assert [(p["name"], p["email"]) for p in r.json()["pending_invites"]] == [("Sam", "sam-avatar9@example.com")]

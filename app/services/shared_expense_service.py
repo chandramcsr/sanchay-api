@@ -55,6 +55,7 @@ from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
 from app.models.shared_recurring_rule import SharedRecurringRule
 from app.models.user import User
+from app.repositories import user_repository
 from app.services.recurring_date_math import due_occurrences
 
 
@@ -253,6 +254,64 @@ async def remove_pending_invite(db: AsyncSession, *, group_id: str, email: str) 
     if invite is not None:
         await db.delete(invite)
         await db.commit()
+
+
+async def get_invite_preview(db: AsyncSession, *, invite_id: str) -> dict | None:
+    """
+    Backs the public, unauthenticated GET /invites/{id} — the one
+    deliberate exception to "every group route checks membership
+    first" documented at the top of the router. Safe specifically
+    because it returns only a group name and an inviter's display
+    name, nothing financial and nothing that requires already being
+    a member to see. invite_id (PendingGroupInvite.id) is a UUID —
+    unguessable, so this doesn't enable scanning for real groups.
+    Returns None for an invalid or already-claimed invite; the router
+    turns that into a 404 either way, so a stale link and a
+    never-existed one look identical to whoever's holding it.
+    """
+    invite = await db.get(PendingGroupInvite, invite_id)
+    if invite is None:
+        return None
+    group = await db.get(Group, invite.group_id)
+    if group is None:
+        return None
+    inviter_name = "Someone"
+    if invite.invited_by:
+        inviter = await user_repository.get_by_id(db, invite.invited_by)
+        if inviter is not None:
+            inviter_name = inviter.display_name
+    return {"group_name": group.name, "inviter_name": inviter_name, "invitee_name": invite.name}
+
+
+async def accept_invite_link(db: AsyncSession, *, invite_id: str, user: User) -> Group | None:
+    """
+    The authenticated half of the invite-link flow. Deliberately does
+    NOT check that the accepting user's email matches the email the
+    inviter originally typed — same trust model as a Slack/Discord
+    invite link (possession of the unguessable link is the
+    authorization, not an email match). This is a genuine, deliberate
+    widening from the email-only join path (join_pending_invites),
+    which only ever matches by exact email — and fixes a real gap
+    that path has: a typo'd invite email, or an invitee who doesn't
+    control that inbox, could otherwise never join at all.
+
+    Consumes (deletes) the specific invite row regardless of whether
+    the group had other pending invites too — this one link, once
+    used, is done, matching how single-use invite links normally
+    behave.
+    """
+    invite = await db.get(PendingGroupInvite, invite_id)
+    if invite is None:
+        return None
+    group = await db.get(Group, invite.group_id)
+    if group is None:
+        await db.delete(invite)
+        await db.commit()
+        return None
+    await add_member_to_group(db, group_id=invite.group_id, user_id=user.id)
+    await db.delete(invite)
+    await db.commit()
+    return group
 
 
 async def create_group(db: AsyncSession, *, name: str, created_by: str, member_ids: list[str]) -> Group:
@@ -833,7 +892,7 @@ async def get_group_members(db: AsyncSession, *, group_id: str) -> list[GroupMem
 
 async def get_group_pending_invites(db: AsyncSession, *, group_id: str) -> list[dict]:
     result = await db.execute(select(PendingGroupInvite).where(PendingGroupInvite.group_id == group_id))
-    return [{"name": inv.name, "email": inv.email} for inv in result.scalars().all()]
+    return [{"id": inv.id, "name": inv.name, "email": inv.email} for inv in result.scalars().all()]
 
 
 async def has_pending_invite(db: AsyncSession, *, group_id: str, email: str) -> bool:
