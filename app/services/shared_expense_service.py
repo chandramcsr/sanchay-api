@@ -735,6 +735,73 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     return balance.quantize(Decimal("0.01"))
 
 
+async def compute_group_debt_simplification(db: AsyncSession, *, group_id: str) -> list[dict]:
+    """
+    Minimizes the number of transactions needed to settle everyone's
+    net position in this group, via the standard greedy algorithm
+    (repeatedly match the largest creditor with the largest debtor) --
+    the same approach Splitwise itself is known for. A real 3+ person
+    cycle (A owes B, B owes C, C owes A the same amount) nets to zero
+    total transfers needed; pairwise balances alone can't see that,
+    since each pair looks non-zero in isolation.
+
+    Deliberately scoped to this group's own expense splits only, NOT
+    settlements -- Settlement is deliberately cross-group by design
+    (see Settlement's own docstring: two people's balance is a running
+    net across EVERYTHING they share, not tied to any one group), so a
+    past settlement can't be attributed to "this group's" debts
+    specifically. That means these suggested transfers are what this
+    group's expenses alone would require, not a strict reconciliation
+    against money that may have already changed hands for a different
+    group entirely. A disclosed scoping choice forced by the data
+    model, not an oversight -- the group detail view should say as
+    much wherever this is surfaced.
+
+    Frozen (deleted-account) participants are included, keyed by
+    email_ref instead of user_id, same identity model used everywhere
+    else for them -- someone owing money doesn't stop being real just
+    because they deleted their account.
+    """
+    expenses = await get_group_expenses(db, group_id=group_id)
+    net: dict[str, Decimal] = {}
+    names: dict[str, str] = {}
+
+    for expense in expenses:
+        payer_key = expense.paid_by or f"frozen:{expense.paid_by_email_ref}"
+        names[payer_key] = expense.paid_by_name_snapshot
+        net[payer_key] = net.get(payer_key, Decimal("0.00")) + expense.amount
+
+        splits_result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense.id))
+        for split in splits_result.scalars().all():
+            split_key = split.user_id or f"frozen:{split.email_ref}"
+            names[split_key] = split.name_snapshot
+            net[split_key] = net.get(split_key, Decimal("0.00")) - split.share_amount
+
+    creditors = sorted(((k, v) for k, v in net.items() if v > Decimal("0.005")), key=lambda x: -x[1])
+    debtors = sorted(((k, v) for k, v in net.items() if v < Decimal("-0.005")), key=lambda x: x[1])
+
+    transfers: list[dict] = []
+    ci, di = 0, 0
+    while ci < len(creditors) and di < len(debtors):
+        cred_key, cred_amt = creditors[ci]
+        debt_key, debt_amt = debtors[di]
+        amount = min(cred_amt, -debt_amt).quantize(Decimal("0.01"))
+        if amount > Decimal("0.00"):
+            transfers.append({
+                "from_key": debt_key, "from_name": names[debt_key],
+                "to_key": cred_key, "to_name": names[cred_key],
+                "amount": amount,
+            })
+        creditors[ci] = (cred_key, cred_amt - amount)
+        debtors[di] = (debt_key, debt_amt + amount)
+        if creditors[ci][1] <= Decimal("0.005"):
+            ci += 1
+        if debtors[di][1] >= Decimal("-0.005"):
+            di += 1
+
+    return transfers
+
+
 async def compute_balance_with_frozen_friend(db: AsyncSession, *, user_id: str, friend_email_ref: str) -> Decimal:
     """
     Same running-total model as compute_balance(), for a friend whose

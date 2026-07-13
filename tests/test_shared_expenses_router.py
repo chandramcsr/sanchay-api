@@ -1201,3 +1201,43 @@ async def test_edit_expense_switches_split_type_and_persists_it(client):
     )
     assert r2.json()["split_type"] == "percentage"  # still percentage, not reverted
     assert {s["name"]: s["share_amount"] for s in r2.json()["splits"]} == {"Alice": "40.00", "Bob": "60.00"}
+
+
+# ---------- GET /groups/{id}/simplified-debts ----------
+
+
+async def test_simplified_debts_endpoint_returns_the_minimal_transfer(client):
+    alice_token, alice_id = await _signup(client, "alice-simp1@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-simp1@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip", "members": [{"email": "bob-simp1@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Hotel", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
+    )
+
+    r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/simplified-debts", headers=_auth(bob_token))
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["from_user_id"] == bob_id
+    assert body[0]["to_user_id"] == alice_id
+    assert body[0]["amount"] == "50.00"
+
+
+async def test_simplified_debts_requires_group_membership(client):
+    alice_token, alice_id = await _signup(client, "alice-simp2@example.com", "Alice")
+    stranger_token, _ = await _signup(client, "stranger-simp2@example.com", "Stranger")
+    group_resp = await client.post("/api/v1/shared-expenses/groups", headers=_auth(alice_token), json={"name": "Trip", "members": []})
+    group_id = group_resp.json()["id"]
+
+    r = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/simplified-debts", headers=_auth(stranger_token))
+    assert r.status_code == 404  # enumeration-safe: doesn't confirm the group exists
+
+
+async def test_simplified_debts_requires_authentication(client):
+    r = await client.get("/api/v1/shared-expenses/groups/some-id/simplified-debts")
+    assert r.status_code == 401

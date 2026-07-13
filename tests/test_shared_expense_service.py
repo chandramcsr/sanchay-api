@@ -12,6 +12,7 @@ from app.services.shared_expense_service import (
     add_comment,
     compute_balance,
     compute_balance_with_frozen_friend,
+    compute_group_debt_simplification,
     create_group,
     create_shared_expense,
     edit_shared_expense,
@@ -540,3 +541,111 @@ async def test_get_all_balances_includes_both_a_live_and_a_frozen_friend_togethe
     balances = await get_all_balances(db_session, user_id=alice.id)
     names = {b["name"]: b["is_frozen"] for b in balances}
     assert names == {"Bob": True, "Carol": False}
+
+
+# ---------- compute_group_debt_simplification ----------
+#
+# The real differentiator this exists for: pairwise balances (compute_balance)
+# can't see a multi-person cycle. A owes B, B owes C, C owes A the same
+# amount nets to ZERO total transfers needed once netted properly --
+# but each pairwise balance looks non-zero in isolation.
+
+
+async def test_simple_two_person_expense_needs_exactly_one_transfer(db_session):
+    alice, bob = await _make_users(db_session, "-simplify1")
+    group = await create_group(db_session, name="Trip", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Hotel",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
+    assert len(transfers) == 1
+    assert transfers[0]["from_key"] == bob.id
+    assert transfers[0]["to_key"] == alice.id
+    assert transfers[0]["amount"] == Decimal("50.00")
+
+
+async def test_a_perfect_three_person_cycle_simplifies_to_zero_transfers(db_session):
+    # A pays for A+B, B pays for B+C, C pays for C+A, all equal splits
+    # of the same amount -- a real, closed cycle where every dollar
+    # someone is owed is exactly offset by a dollar they owe someone
+    # else. Pairwise balances would show THREE non-zero relationships
+    # (A<-B, B<-C, C<-A); simplification correctly finds that nothing
+    # actually needs to change hands.
+    alice, bob = await _make_users(db_session, "-cycle")
+    carol = User(email="carol-cycle@example.com", hashed_password=hash_password("hunter2222"), display_name="Carol")
+    db_session.add(carol)
+    await db_session.commit()
+    await db_session.refresh(carol)
+
+    group = await create_group(db_session, name="Trio", created_by=alice.id, member_ids=[bob.id, carol.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Exp1",
+        amount=Decimal("30.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=bob.id, description="Exp2",
+        amount=Decimal("30.00"), expense_date="2026-07-08", participant_ids=[bob.id, carol.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=carol.id, description="Exp3",
+        amount=Decimal("30.00"), expense_date="2026-07-08", participant_ids=[carol.id, alice.id],
+    )
+
+    # Confirm the pairwise view really does show 3 separate non-zero
+    # balances first -- that's the whole point of the comparison.
+    assert await compute_balance(db_session, user_a=bob.id, user_b=alice.id) == Decimal("15.00")
+    assert await compute_balance(db_session, user_a=carol.id, user_b=bob.id) == Decimal("15.00")
+    assert await compute_balance(db_session, user_a=alice.id, user_b=carol.id) == Decimal("15.00")
+
+    transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
+    assert transfers == []
+
+
+async def test_simplification_uses_fewer_transfers_than_the_number_of_expenses(db_session):
+    # 4 people, star pattern: everyone owes Alice for something she
+    # paid for the whole group each time. Should collapse to exactly
+    # 3 transfers (one per debtor), not more.
+    alice, bob = await _make_users(db_session, "-star")
+    carol = User(email="carol-star@example.com", hashed_password=hash_password("hunter2222"), display_name="Carol")
+    dave = User(email="dave-star@example.com", hashed_password=hash_password("hunter2222"), display_name="Dave")
+    db_session.add(carol)
+    db_session.add(dave)
+    await db_session.commit()
+    await db_session.refresh(carol)
+    await db_session.refresh(dave)
+
+    group = await create_group(db_session, name="Quad", created_by=alice.id, member_ids=[bob.id, carol.id, dave.id])
+    for i in range(3):
+        await create_shared_expense(
+            db_session, group_id=group.id, paid_by=alice.id, description=f"Exp{i}",
+            amount=Decimal("40.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id, carol.id, dave.id],
+        )
+    transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
+    assert len(transfers) == 3
+    assert {t["from_name"] for t in transfers} == {"Bob", "Carol", "Dave"}
+    assert all(t["to_name"] == "Alice" for t in transfers)
+    assert all(t["amount"] == Decimal("30.00") for t in transfers)  # 3 expenses x $10 share each
+
+
+async def test_simplification_includes_a_frozen_participant(db_session):
+    alice, bob = await _make_users(db_session, "-simplify-frozen")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await freeze_user_references(db_session, user_id=bob.id)
+
+    transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
+    assert len(transfers) == 1
+    assert transfers[0]["from_name"] == "Bob"
+    assert transfers[0]["from_key"].startswith("frozen:")
+    assert transfers[0]["to_key"] == alice.id
+
+
+async def test_simplification_returns_empty_for_a_group_with_no_expenses(db_session):
+    alice, bob = await _make_users(db_session, "-simplify-empty")
+    group = await create_group(db_session, name="Empty", created_by=alice.id, member_ids=[bob.id])
+    transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
+    assert transfers == []

@@ -50,6 +50,7 @@ from app.schemas.shared_expenses import (
     SetRecurringRuleActiveRequest,
     SettlementCreateRequest,
     SettlementOut,
+    SimplifiedTransferOut,
     SharedExpenseCreateRequest,
     SharedExpenseEditRequest,
     SharedExpenseOut,
@@ -724,3 +725,30 @@ async def my_balances(request: Request, current_user: User = Depends(get_current
             is_frozen=b["is_frozen"],
         ))
     return result
+
+
+@router.get("/groups/{group_id}/simplified-debts", response_model=list[SimplifiedTransferOut])
+@limiter.limit("60/minute")
+async def get_simplified_debts(
+    request: Request, group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[SimplifiedTransferOut]:
+    """
+    "Here's the minimum set of payments to settle this group up,"
+    not one pairwise balance per person. See
+    svc.compute_group_debt_simplification's docstring for the honest
+    scoping limitation: based on this group's own expenses only, not
+    settlements (which are cross-group by design and can't be
+    attributed to one group specifically).
+    """
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    transfers = await svc.compute_group_debt_simplification(db, group_id=group_id)
+    return [
+        SimplifiedTransferOut(
+            from_user_id=None if t["from_key"].startswith("frozen:") else t["from_key"],
+            from_name=t["from_name"],
+            to_user_id=None if t["to_key"].startswith("frozen:") else t["to_key"],
+            to_name=t["to_name"],
+            amount=str(t["amount"]),
+        )
+        for t in transfers
+    ]

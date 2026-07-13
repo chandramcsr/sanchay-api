@@ -248,6 +248,21 @@ class BalanceOut(BaseModel):
     is_frozen: bool = False
 
 
+class SimplifiedTransferOut(BaseModel):
+    """
+    One suggested payment from compute_group_debt_simplification() --
+    "Bob pays Alice $50" rather than three separate pairwise balances
+    that a 3+ person cycle would otherwise show. from_user_id/
+    to_user_id are None for a frozen (deleted-account) participant,
+    same convention as BalanceOut.
+    """
+    from_user_id: str | None
+    from_name: str
+    to_user_id: str | None
+    to_name: str
+    amount: str  # decimal string
+
+
 # ---------- recurring shared expenses ----------
 
 class RecurringRuleCreateRequest(BaseModel):
