@@ -19,6 +19,7 @@ from app.services.shared_expense_service import (
     ensure_pending_invite,
     freeze_user_references,
     get_all_balances,
+    get_balance_breakdown,
     record_settlement,
     split_by_percentage,
     split_by_shares,
@@ -649,3 +650,71 @@ async def test_simplification_returns_empty_for_a_group_with_no_expenses(db_sess
     group = await create_group(db_session, name="Empty", created_by=alice.id, member_ids=[bob.id])
     transfers = await compute_group_debt_simplification(db_session, group_id=group.id)
     assert transfers == []
+
+
+# ---------- get_balance_breakdown ----------
+#
+# "Why do I owe this" -- the actual expenses and settlements behind
+# a net balance, not just the total. Trust is the real product in
+# shared money.
+
+
+async def test_breakdown_includes_an_expense_line_for_each_direction(db_session):
+    alice, bob = await _make_users(db_session, "-breakdown1")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=bob.id, description="Groceries",
+        amount=Decimal("40.00"), expense_date="2026-07-09", participant_ids=[alice.id, bob.id],
+    )
+
+    items = await get_balance_breakdown(db_session, user_id=alice.id, other_user_id=bob.id)
+    assert len(items) == 2
+    dinner = next(i for i in items if i["description"] == "Dinner")
+    groceries = next(i for i in items if i["description"] == "Groceries")
+    assert dinner["direction"] == "owed_to_you"  # alice paid, bob's share is owed to alice
+    assert dinner["amount"] == Decimal("50.00")
+    assert dinner["group_name"] == "Roommates"
+    assert groceries["direction"] == "you_owe"  # bob paid, this is alice's share
+    assert groceries["amount"] == Decimal("20.00")
+
+
+async def test_breakdown_includes_settlement_lines(db_session):
+    alice, bob = await _make_users(db_session, "-breakdown2")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await record_settlement(db_session, from_user_id=bob.id, to_user_id=alice.id, amount=Decimal("50.00"), settled_date="2026-07-10")
+
+    items = await get_balance_breakdown(db_session, user_id=alice.id, other_user_id=bob.id)
+    assert len(items) == 2
+    settlement = next(i for i in items if i["type"] == "settlement")
+    assert settlement["direction"] == "they_paid"  # bob paid alice, from alice's perspective
+    assert settlement["amount"] == Decimal("50.00")
+    assert settlement["group_name"] is None  # settlements aren't group-scoped
+
+
+async def test_breakdown_is_sorted_oldest_first(db_session):
+    alice, bob = await _make_users(db_session, "-breakdown3")
+    group = await create_group(db_session, name="Trip", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Later expense",
+        amount=Decimal("20.00"), expense_date="2026-07-15", participant_ids=[alice.id, bob.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Earlier expense",
+        amount=Decimal("20.00"), expense_date="2026-07-01", participant_ids=[alice.id, bob.id],
+    )
+    items = await get_balance_breakdown(db_session, user_id=alice.id, other_user_id=bob.id)
+    assert [i["description"] for i in items] == ["Earlier expense", "Later expense"]
+
+
+async def test_breakdown_is_empty_for_two_people_with_no_shared_history(db_session):
+    alice, bob = await _make_users(db_session, "-breakdown4")
+    items = await get_balance_breakdown(db_session, user_id=alice.id, other_user_id=bob.id)
+    assert items == []

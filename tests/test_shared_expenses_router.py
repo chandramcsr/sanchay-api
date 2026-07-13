@@ -1241,3 +1241,42 @@ async def test_simplified_debts_requires_group_membership(client):
 async def test_simplified_debts_requires_authentication(client):
     r = await client.get("/api/v1/shared-expenses/groups/some-id/simplified-debts")
     assert r.status_code == 401
+
+
+# ---------- GET /balances/{other_user_id}/breakdown ----------
+
+
+async def test_balance_breakdown_endpoint_returns_the_contributing_expense(client):
+    alice_token, alice_id = await _signup(client, "alice-bd1@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-bd1@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip", "members": [{"email": "bob-bd1@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Hotel", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
+    )
+
+    r = await client.get(f"/api/v1/shared-expenses/balances/{alice_id}/breakdown", headers=_auth(bob_token))
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["description"] == "Hotel"
+    assert body[0]["amount"] == "50.00"
+    assert body[0]["direction"] == "you_owe"
+
+
+async def test_balance_breakdown_requires_authentication(client):
+    r = await client.get("/api/v1/shared-expenses/balances/some-id/breakdown")
+    assert r.status_code == 401
+
+
+async def test_balance_breakdown_is_empty_for_a_stranger_with_no_shared_history(client):
+    alice_token, _ = await _signup(client, "alice-bd2@example.com", "Alice")
+    stranger_token, stranger_id = await _signup(client, "stranger-bd2@example.com", "Stranger")
+
+    r = await client.get(f"/api/v1/shared-expenses/balances/{stranger_id}/breakdown", headers=_auth(alice_token))
+    assert r.status_code == 200
+    assert r.json() == []

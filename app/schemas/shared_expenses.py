@@ -263,6 +263,23 @@ class SimplifiedTransferOut(BaseModel):
     amount: str  # decimal string
 
 
+class BalanceBreakdownItemOut(BaseModel):
+    """
+    One line in "why do I owe this" -- either a single expense split
+    or a settlement between two people. direction is one of
+    "you_owe" / "owed_to_you" (expenses) or "you_paid" / "they_paid"
+    (settlements), telling the frontend which way this specific line
+    pushed the running total without it needing to re-derive that
+    from amount sign alone.
+    """
+    type: Literal["expense", "settlement"]
+    date: str
+    group_name: str | None  # None for settlements, which aren't group-scoped
+    description: str | None  # None for settlements
+    amount: str  # decimal string
+    direction: Literal["you_owe", "owed_to_you", "you_paid", "they_paid"]
+
+
 # ---------- recurring shared expenses ----------
 
 class RecurringRuleCreateRequest(BaseModel):

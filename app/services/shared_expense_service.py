@@ -735,6 +735,60 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     return balance.quantize(Decimal("0.01"))
 
 
+async def get_balance_breakdown(db: AsyncSession, *, user_id: str, other_user_id: str) -> list[dict]:
+    """
+    The actual list of expenses and settlements that add up to the net
+    number compute_balance() returns for these two people -- "why do I
+    owe $47.32," not just the total. Sorted oldest-first so it reads
+    as a real running history, the same reasoning a receipt gives you.
+
+    Scoped to live friends only (both are real user_ids) -- a frozen
+    friend has no live other_user_id to look this up by in the first
+    place, since get_all_balances() already returns user_id: None for
+    them; there's nothing for the frontend to call this endpoint with.
+    A frozen-friend breakdown is a real, disclosed gap left for later,
+    not solved here.
+    """
+    items: list[dict] = []
+
+    result = await db.execute(
+        select(SharedExpenseSplit, SharedExpense)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpenseSplit.user_id == user_id, SharedExpense.paid_by == other_user_id)
+    )
+    for split, expense in result.all():
+        group = await db.get(Group, expense.group_id)
+        items.append({
+            "type": "expense", "date": expense.expense_date, "group_name": group.name if group else "",
+            "description": expense.description, "amount": split.share_amount,
+            "direction": "you_owe",  # they paid, this is your share
+        })
+
+    result = await db.execute(
+        select(SharedExpenseSplit, SharedExpense)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpenseSplit.user_id == other_user_id, SharedExpense.paid_by == user_id)
+    )
+    for split, expense in result.all():
+        group = await db.get(Group, expense.group_id)
+        items.append({
+            "type": "expense", "date": expense.expense_date, "group_name": group.name if group else "",
+            "description": expense.description, "amount": split.share_amount,
+            "direction": "owed_to_you",  # you paid, this is their share
+        })
+
+    result = await db.execute(select(Settlement).where(Settlement.from_user_id == user_id, Settlement.to_user_id == other_user_id))
+    for s in result.scalars().all():
+        items.append({"type": "settlement", "date": s.settled_date, "group_name": None, "description": None, "amount": s.amount, "direction": "you_paid"})
+
+    result = await db.execute(select(Settlement).where(Settlement.from_user_id == other_user_id, Settlement.to_user_id == user_id))
+    for s in result.scalars().all():
+        items.append({"type": "settlement", "date": s.settled_date, "group_name": None, "description": None, "amount": s.amount, "direction": "they_paid"})
+
+    items.sort(key=lambda i: i["date"])
+    return items
+
+
 async def compute_group_debt_simplification(db: AsyncSession, *, group_id: str) -> list[dict]:
     """
     Minimizes the number of transactions needed to settle everyone's

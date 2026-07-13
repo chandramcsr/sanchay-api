@@ -51,6 +51,7 @@ from app.schemas.shared_expenses import (
     SettlementCreateRequest,
     SettlementOut,
     SimplifiedTransferOut,
+    BalanceBreakdownItemOut,
     SharedExpenseCreateRequest,
     SharedExpenseEditRequest,
     SharedExpenseOut,
@@ -751,4 +752,28 @@ async def get_simplified_debts(
             amount=str(t["amount"]),
         )
         for t in transfers
+    ]
+
+
+@router.get("/balances/{other_user_id}/breakdown", response_model=list[BalanceBreakdownItemOut])
+@limiter.limit("60/minute")
+async def get_balance_breakdown_route(
+    request: Request, other_user_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[BalanceBreakdownItemOut]:
+    """
+    "Here are the actual expenses and settlements behind that number,"
+    not just the net total -- trust is the real product in shared
+    money, and a receipt is more convincing than an unexplained sum.
+    Deliberately does NOT require the two people to share a group in
+    common at request time (they might no longer, e.g. after leaving
+    it) -- if compute_balance ever considered an expense between them,
+    this shows it too, using the exact same underlying query logic.
+    """
+    items = await svc.get_balance_breakdown(db, user_id=current_user.id, other_user_id=other_user_id)
+    return [
+        BalanceBreakdownItemOut(
+            type=i["type"], date=i["date"], group_name=i["group_name"], description=i["description"],
+            amount=str(i["amount"]), direction=i["direction"],
+        )
+        for i in items
     ]
