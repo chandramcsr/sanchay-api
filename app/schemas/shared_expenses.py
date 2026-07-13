@@ -234,11 +234,18 @@ class BalanceOut(BaseModel):
     debt counted as an asset); this shape makes the equivalent
     mistake structurally impossible to make when building whatever
     reads this response.
+
+    user_id is None specifically for a frozen friend (their account
+    was deleted, only email_ref + name_snapshot survive) -- is_frozen
+    makes that explicit rather than making the caller infer it from a
+    missing id, and gives the frontend a clean "(account deleted)"
+    label hook.
     """
-    user_id: str
+    user_id: str | None
     name: str
     you_owe_them: str  # decimal string, "0.00" if not applicable
     they_owe_you: str  # decimal string, "0.00" if not applicable
+    is_frozen: bool = False
 
 
 # ---------- recurring shared expenses ----------

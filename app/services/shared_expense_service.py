@@ -735,6 +735,41 @@ async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Deci
     return balance.quantize(Decimal("0.01"))
 
 
+async def compute_balance_with_frozen_friend(db: AsyncSession, *, user_id: str, friend_email_ref: str) -> Decimal:
+    """
+    Same running-total model as compute_balance(), for a friend whose
+    account has since been deleted (user_id is NULL on their split/
+    expense rows, email_ref is what's left to identify them). Settlements
+    aren't included here -- Settlement rows are keyed by user_id (both
+    sides), and a deleted user's settlements, like their user row
+    itself, are genuinely gone, not frozen. In practice this means a
+    frozen friend's balance here reflects the full historical expense
+    total, unadjusted for any settlement they made before deleting
+    their account -- a real, disclosed limitation of "freeze, don't
+    cascade," not an oversight: freeze_user_references() only ever
+    touched split/expense rows, never Settlement.
+    """
+    balance = Decimal("0.00")
+
+    result = await db.execute(
+        select(SharedExpenseSplit, SharedExpense)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpenseSplit.user_id == user_id, SharedExpense.paid_by.is_(None), SharedExpense.paid_by_email_ref == friend_email_ref)
+    )
+    for split, _expense in result.all():
+        balance += split.share_amount
+
+    result = await db.execute(
+        select(SharedExpenseSplit, SharedExpense)
+        .join(SharedExpense, SharedExpenseSplit.shared_expense_id == SharedExpense.id)
+        .where(SharedExpenseSplit.user_id.is_(None), SharedExpenseSplit.email_ref == friend_email_ref, SharedExpense.paid_by == user_id)
+    )
+    for split, _expense in result.all():
+        balance -= split.share_amount
+
+    return balance.quantize(Decimal("0.01"))
+
+
 async def freeze_user_references(db: AsyncSession, *, user_id: str) -> None:
     """
     Called by auth_service.delete_account() BEFORE the user row is
@@ -976,23 +1011,33 @@ async def delete_shared_expense(db: AsyncSession, *, expense_id: str) -> None:
 async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
     """
     "Who owes me, who do I owe" across every group this user is in.
-    Scoped to currently-LIVE friends only for v1 — a friend whose
-    account has since been deleted (frozen, user_id NULL) won't
-    appear in this summary even though their historical expenses are
-    still visible inside the relevant group's own detail view with
-    "(account deleted)" labels. Showing frozen-friend balances in this
-    top-level summary too is a real, valid gap, tracked as a backlog
-    item rather than folded into this pass — it would need
-    compute_balance() reworked to match by email_ref instead of
-    user_id, a bigger change to an already-tested function.
+    Includes both live friends (matched by user_id) and frozen friends
+    -- someone whose account was deleted, matched by email_ref instead
+    (see compute_balance_with_frozen_friend's docstring for the one
+    real gap that comes with that: their pre-deletion settlements
+    aren't reflected, since Settlement rows are never frozen, only
+    split/expense rows are). This used to only cover live friends,
+    a documented gap -- a frozen friend's balance was invisible here
+    even though their historical expenses stayed visible inside the
+    group's own detail view.
     """
     my_groups = await get_user_groups(db, user_id=user_id)
     other_user_ids: set[str] = set()
+    frozen_friends: dict[str, str] = {}  # email_ref -> name_snapshot
     for group in my_groups:
         members = await get_group_members(db, group_id=group.id)
         for m in members:
             if m.user_id and m.user_id != user_id:
                 other_user_ids.add(m.user_id)
+
+        expenses = await get_group_expenses(db, group_id=group.id)
+        for expense in expenses:
+            if expense.paid_by is None:
+                frozen_friends[expense.paid_by_email_ref] = expense.paid_by_name_snapshot
+            splits_result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense.id))
+            for split in splits_result.scalars().all():
+                if split.user_id is None:
+                    frozen_friends[split.email_ref] = split.name_snapshot
 
     balances = []
     for other_id in other_user_ids:
@@ -1001,7 +1046,12 @@ async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
             continue
         balance = await compute_balance(db, user_a=user_id, user_b=other_id)
         if balance != Decimal("0.00"):
-            balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance})
+            balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance, "is_frozen": False})
+
+    for email_ref, name in frozen_friends.items():
+        balance = await compute_balance_with_frozen_friend(db, user_id=user_id, friend_email_ref=email_ref)
+        if balance != Decimal("0.00"):
+            balances.append({"user_id": None, "name": name, "balance": balance, "is_frozen": True})
 
     return balances
 

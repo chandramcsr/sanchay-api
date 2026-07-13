@@ -98,7 +98,8 @@ async def _group_to_out(db: AsyncSession, group) -> GroupOut:
 
 
 @router.post("/groups", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
-async def create_group(
+@limiter.limit("30/minute")
+async def create_group(request: Request, 
     payload: GroupCreateRequest,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
@@ -127,13 +128,15 @@ async def create_group(
 
 
 @router.get("/groups", response_model=list[GroupOut])
-async def list_my_groups(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[GroupOut]:
+@limiter.limit("120/minute")
+async def list_my_groups(request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[GroupOut]:
     groups = await svc.get_user_groups(db, user_id=current_user.id)
     return [await _group_to_out(db, group) for group in groups]
 
 
 @router.get("/groups/{group_id}", response_model=GroupOut)
-async def get_group_detail(
+@limiter.limit("120/minute")
+async def get_group_detail(request: Request, 
     group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> GroupOut:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
@@ -144,7 +147,8 @@ async def get_group_detail(
 
 
 @router.post("/groups/{group_id}/members", response_model=GroupOut, status_code=status.HTTP_201_CREATED)
-async def add_group_member(
+@limiter.limit("30/minute")
+async def add_group_member(request: Request, 
     group_id: str,
     payload: AddMemberRequest,
     background_tasks: BackgroundTasks,
@@ -177,7 +181,8 @@ async def add_group_member(
 
 
 @router.delete("/groups/{group_id}/members/{user_id}", response_model=GroupOut)
-async def remove_group_member(
+@limiter.limit("30/minute")
+async def remove_group_member(request: Request, 
     group_id: str, user_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> GroupOut:
     """
@@ -203,7 +208,8 @@ async def remove_group_member(
 
 
 @router.delete("/groups/{group_id}/pending-invites", response_model=GroupOut)
-async def remove_pending_invite(
+@limiter.limit("30/minute")
+async def remove_pending_invite(request: Request, 
     group_id: str, email: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> GroupOut:
     """Same expense-history protection as remove_group_member, for someone who was never a real member — just an invite."""
@@ -253,7 +259,8 @@ async def accept_invite(
 
 
 @router.patch("/groups/{group_id}", response_model=GroupOut)
-async def rename_group(
+@limiter.limit("30/minute")
+async def rename_group(request: Request, 
     group_id: str, payload: GroupRenameRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> GroupOut:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
@@ -262,7 +269,8 @@ async def rename_group(
 
 
 @router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_group(
+@limiter.limit("30/minute")
+async def delete_group(request: Request, 
     group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     """
@@ -309,7 +317,8 @@ async def _expense_to_out(db: AsyncSession, expense, splits) -> SharedExpenseOut
 
 
 @router.post("/groups/{group_id}/expenses", response_model=SharedExpenseOut, status_code=status.HTTP_201_CREATED)
-async def create_expense(
+@limiter.limit("60/minute")
+async def create_expense(request: Request, 
     group_id: str,
     payload: SharedExpenseCreateRequest,
     background_tasks: BackgroundTasks,
@@ -376,7 +385,8 @@ async def create_expense(
 
 
 @router.get("/groups/{group_id}/expenses", response_model=list[SharedExpenseOut])
-async def list_group_expenses(
+@limiter.limit("120/minute")
+async def list_group_expenses(request: Request, 
     group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[SharedExpenseOut]:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
@@ -412,7 +422,8 @@ def _rule_to_out(rule) -> RecurringRuleOut:
 
 
 @router.post("/groups/{group_id}/recurring", response_model=RecurringRuleOut, status_code=status.HTTP_201_CREATED)
-async def create_recurring_rule(
+@limiter.limit("30/minute")
+async def create_recurring_rule(request: Request, 
     group_id: str, payload: RecurringRuleCreateRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> RecurringRuleOut:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
@@ -454,7 +465,8 @@ async def create_recurring_rule(
 
 
 @router.get("/groups/{group_id}/recurring", response_model=list[RecurringRuleOut])
-async def list_recurring_rules(
+@limiter.limit("120/minute")
+async def list_recurring_rules(request: Request, 
     group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[RecurringRuleOut]:
     await _require_group_member(db, group_id=group_id, user_id=current_user.id)
@@ -463,7 +475,8 @@ async def list_recurring_rules(
 
 
 @router.patch("/recurring/{rule_id}", response_model=RecurringRuleOut)
-async def edit_recurring_rule(
+@limiter.limit("30/minute")
+async def edit_recurring_rule(request: Request, 
     rule_id: str, payload: RecurringRuleEditRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> RecurringRuleOut:
     rule = await db.get(SharedRecurringRule, rule_id)
@@ -525,7 +538,8 @@ async def edit_recurring_rule(
 
 
 @router.patch("/recurring/{rule_id}/active", response_model=RecurringRuleOut)
-async def set_recurring_rule_active(
+@limiter.limit("30/minute")
+async def set_recurring_rule_active(request: Request, 
     rule_id: str, payload: SetRecurringRuleActiveRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> RecurringRuleOut:
     rule = await db.get(SharedRecurringRule, rule_id)
@@ -537,7 +551,8 @@ async def set_recurring_rule_active(
 
 
 @router.delete("/recurring/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_recurring_rule(
+@limiter.limit("30/minute")
+async def delete_recurring_rule(request: Request, 
     rule_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     rule = await db.get(SharedRecurringRule, rule_id)
@@ -556,7 +571,8 @@ async def _require_expense_access(db: AsyncSession, *, expense_id: str, user_id:
 
 
 @router.get("/expenses/{expense_id}", response_model=SharedExpenseOut)
-async def get_expense_detail(
+@limiter.limit("120/minute")
+async def get_expense_detail(request: Request, 
     expense_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> SharedExpenseOut:
     expense = await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
@@ -565,7 +581,8 @@ async def get_expense_detail(
 
 
 @router.patch("/expenses/{expense_id}", response_model=SharedExpenseOut)
-async def edit_expense(
+@limiter.limit("30/minute")
+async def edit_expense(request: Request, 
     expense_id: str,
     payload: SharedExpenseEditRequest,
     background_tasks: BackgroundTasks,
@@ -626,7 +643,8 @@ async def edit_expense(
 
 
 @router.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_expense(
+@limiter.limit("30/minute")
+async def delete_expense(request: Request, 
     expense_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     """
@@ -640,7 +658,8 @@ async def delete_expense(
 
 
 @router.get("/expenses/{expense_id}/comments", response_model=list[CommentOut])
-async def list_comments(
+@limiter.limit("120/minute")
+async def list_comments(request: Request, 
     expense_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[CommentOut]:
     await _require_expense_access(db, expense_id=expense_id, user_id=current_user.id)
@@ -649,7 +668,8 @@ async def list_comments(
 
 
 @router.post("/expenses/{expense_id}/comments", response_model=CommentOut, status_code=status.HTTP_201_CREATED)
-async def add_comment(
+@limiter.limit("60/minute")
+async def add_comment(request: Request, 
     expense_id: str,
     payload: CommentCreateRequest,
     current_user: User = Depends(get_current_user),
@@ -661,7 +681,8 @@ async def add_comment(
 
 
 @router.post("/settlements", response_model=SettlementOut, status_code=status.HTTP_201_CREATED)
-async def record_settlement(
+@limiter.limit("30/minute")
+async def record_settlement(request: Request, 
     payload: SettlementCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> SettlementOut:
     to_user = await user_repository.get_by_id(db, payload.to_user_id)
@@ -687,7 +708,8 @@ async def record_settlement(
 
 
 @router.get("/balances", response_model=list[BalanceOut])
-async def my_balances(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[BalanceOut]:
+@limiter.limit("120/minute")
+async def my_balances(request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[BalanceOut]:
     for group in await svc.get_user_groups(db, user_id=current_user.id):
         await svc.materialize_due_shared_expenses(db, group_id=group.id)
     balances = await svc.get_all_balances(db, user_id=current_user.id)
@@ -699,5 +721,6 @@ async def my_balances(current_user: User = Depends(get_current_user), db: AsyncS
             name=b["name"],
             you_owe_them=str(max(balance, Decimal("0.00"))),
             they_owe_you=str(max(-balance, Decimal("0.00"))),
+            is_frozen=b["is_frozen"],
         ))
     return result

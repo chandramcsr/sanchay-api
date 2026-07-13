@@ -11,11 +11,13 @@ from app.models.user import User
 from app.services.shared_expense_service import (
     add_comment,
     compute_balance,
+    compute_balance_with_frozen_friend,
     create_group,
     create_shared_expense,
     edit_shared_expense,
     ensure_pending_invite,
     freeze_user_references,
+    get_all_balances,
     record_settlement,
     split_by_percentage,
     split_by_shares,
@@ -453,3 +455,88 @@ async def test_a_pending_invite_name_is_replaced_by_the_real_signup_name_consist
     result = await db_session.execute(select(GroupMember).where(GroupMember.user_id == sam.id))
     member = result.scalar_one()
     assert member.name_snapshot == "Samuel"  # consistent with the split
+
+
+# ---------- frozen friends showing up in the top-level balance summary ----------
+#
+# The gap this closes: get_all_balances() used to only ever look at
+# LIVE group members (matched by user_id) -- a friend whose account
+# had since been deleted was invisible in this top-level summary even
+# though their historical expenses stayed visible inside the group's
+# own detail view. Fixed by also matching frozen friends via
+# email_ref, the same durable identity anchor freeze_user_references
+# already relies on for reconnect_by_email.
+
+
+async def test_compute_balance_with_frozen_friend_reflects_the_real_debt(db_session):
+    from app.services.shared_expense_service import email_reference
+
+    alice, bob = await _make_users(db_session, "-frozen1")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    ref = email_reference(bob.email)
+    await freeze_user_references(db_session, user_id=bob.id)
+
+    balance = await compute_balance_with_frozen_friend(db_session, user_id=alice.id, friend_email_ref=ref)
+    assert balance == Decimal("-50.00")  # negative = the frozen friend (Bob) owes Alice
+
+
+async def test_get_all_balances_includes_a_frozen_friend(db_session):
+    alice, bob = await _make_users(db_session, "-frozen2")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await freeze_user_references(db_session, user_id=bob.id)
+
+    balances = await get_all_balances(db_session, user_id=alice.id)
+    assert len(balances) == 1
+    assert balances[0]["name"] == "Bob"
+    assert balances[0]["user_id"] is None
+    assert balances[0]["is_frozen"] is True
+    assert balances[0]["balance"] == Decimal("-50.00")
+
+
+async def test_get_all_balances_omits_a_frozen_friend_whose_balance_is_now_zero(db_session):
+    # Same scenario, but Bob settled up BEFORE deleting his account --
+    # freeze_user_references doesn't touch Settlement rows (a real,
+    # documented limitation), so this specifically tests that a
+    # zero net balance (from splits alone, ignoring the pre-deletion
+    # settlement) still correctly omits the entry once it nets to zero.
+    alice, bob = await _make_users(db_session, "-frozen3")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("0.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await freeze_user_references(db_session, user_id=bob.id)
+
+    balances = await get_all_balances(db_session, user_id=alice.id)
+    assert balances == []
+
+
+async def test_get_all_balances_includes_both_a_live_and_a_frozen_friend_together(db_session):
+    alice, bob = await _make_users(db_session, "-frozen4")
+    carol = User(email="carol-frozen4@example.com", hashed_password=hash_password("hunter2222"), display_name="Carol")
+    db_session.add(carol)
+    await db_session.commit()
+    await db_session.refresh(carol)
+
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id, carol.id])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Groceries",
+        amount=Decimal("60.00"), expense_date="2026-07-08", participant_ids=[alice.id, carol.id],
+    )
+    await freeze_user_references(db_session, user_id=bob.id)  # only Bob's account is deleted
+
+    balances = await get_all_balances(db_session, user_id=alice.id)
+    names = {b["name"]: b["is_frozen"] for b in balances}
+    assert names == {"Bob": True, "Carol": False}
