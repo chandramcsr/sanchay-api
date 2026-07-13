@@ -695,6 +695,23 @@ async def record_settlement(
     return settlement
 
 
+async def get_settlements_received(db: AsyncSession, *, user_id: str) -> list[Settlement]:
+    """
+    Every settlement where this user is the RECIPIENT (to_user_id),
+    regardless of who recorded it -- which, per record_settlement's
+    own one-sided design, is always the payer, on their own device.
+    Sanchay is local-first and encrypted; there's no mechanism for
+    Bob recording "I paid Alice back" to push a transaction into
+    Alice's own local ledger. This is the read side that lets Alice's
+    app notice a settlement exists that her local ledger doesn't know
+    about yet, so it can prompt her to record where the money actually
+    landed -- the receiving-side mirror of syncSharedExpenseToLedger's
+    per-expense tracking, applied to settlements instead.
+    """
+    result = await db.execute(select(Settlement).where(Settlement.to_user_id == user_id).order_by(Settlement.settled_date))
+    return list(result.scalars().all())
+
+
 async def compute_balance(db: AsyncSession, *, user_a: str, user_b: str) -> Decimal:
     """
     Net amount user_a owes user_b (negative = user_b owes user_a

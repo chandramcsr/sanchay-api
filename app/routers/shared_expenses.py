@@ -709,6 +709,30 @@ async def record_settlement(request: Request,
     )
 
 
+@router.get("/settlements/received", response_model=list[SettlementOut])
+@limiter.limit("60/minute")
+async def list_settlements_received(
+    request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[SettlementOut]:
+    """
+    Every settlement paid TO this user, regardless of who recorded it
+    (always the payer, on their own device -- see
+    svc.get_settlements_received's docstring for why this endpoint
+    needs to exist at all: Sanchay is local-first, so a settlement
+    someone else recorded has no way to reach this user's own local
+    ledger except by this user's own app noticing it's missing and
+    prompting them to record where the money landed).
+    """
+    settlements = await svc.get_settlements_received(db, user_id=current_user.id)
+    return [
+        SettlementOut(
+            id=s.id, from_user_id=s.from_user_id, from_name=s.from_name_snapshot,
+            to_user_id=s.to_user_id, to_name=s.to_name_snapshot, amount=str(s.amount), settled_date=s.settled_date,
+        )
+        for s in settlements
+    ]
+
+
 @router.get("/balances", response_model=list[BalanceOut])
 @limiter.limit("120/minute")
 async def my_balances(request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[BalanceOut]:

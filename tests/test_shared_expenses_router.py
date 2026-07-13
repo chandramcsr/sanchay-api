@@ -1280,3 +1280,50 @@ async def test_balance_breakdown_is_empty_for_a_stranger_with_no_shared_history(
     r = await client.get(f"/api/v1/shared-expenses/balances/{stranger_id}/breakdown", headers=_auth(alice_token))
     assert r.status_code == 200
     assert r.json() == []
+
+
+# ---------- GET /settlements/received ----------
+
+
+async def test_settlements_received_endpoint_shows_a_real_settlement(client):
+    alice_token, alice_id = await _signup(client, "alice-recv1@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-recv1@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip", "members": [{"email": "bob-recv1@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(bob_token),
+        json={"description": "Hotel", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
+    )
+    await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"to_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+
+    r = await client.get("/api/v1/shared-expenses/settlements/received", headers=_auth(bob_token))
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["from_user_id"] == alice_id
+    assert body[0]["to_user_id"] == bob_id
+    assert body[0]["amount"] == "50.00"
+
+
+async def test_settlements_received_excludes_settlements_the_caller_paid_out(client):
+    alice_token, alice_id = await _signup(client, "alice-recv2@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-recv2@example.com", "Bob")
+    await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"to_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+
+    r = await client.get("/api/v1/shared-expenses/settlements/received", headers=_auth(alice_token))
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+async def test_settlements_received_requires_authentication(client):
+    r = await client.get("/api/v1/shared-expenses/settlements/received")
+    assert r.status_code == 401

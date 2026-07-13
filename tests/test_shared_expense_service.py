@@ -20,6 +20,7 @@ from app.services.shared_expense_service import (
     freeze_user_references,
     get_all_balances,
     get_balance_breakdown,
+    get_settlements_received,
     record_settlement,
     split_by_percentage,
     split_by_shares,
@@ -718,3 +719,45 @@ async def test_breakdown_is_empty_for_two_people_with_no_shared_history(db_sessi
     alice, bob = await _make_users(db_session, "-breakdown4")
     items = await get_balance_breakdown(db_session, user_id=alice.id, other_user_id=bob.id)
     assert items == []
+
+
+# ---------- get_settlements_received ----------
+#
+# The read side that lets a recipient's own app notice a settlement
+# it doesn't know about yet -- Sanchay is local-first, so Bob
+# recording "I paid Alice back" has no way to reach Alice's local
+# ledger except by Alice's own app checking this and prompting her.
+
+
+async def test_get_settlements_received_returns_a_settlement_paid_to_this_user(db_session):
+    alice, bob = await _make_users(db_session, "-recv1")
+    await record_settlement(db_session, from_user_id=bob.id, to_user_id=alice.id, amount=Decimal("50.00"), settled_date="2026-07-10")
+
+    received = await get_settlements_received(db_session, user_id=alice.id)
+    assert len(received) == 1
+    assert received[0].from_user_id == bob.id
+    assert received[0].to_user_id == alice.id
+    assert received[0].amount == Decimal("50.00")
+
+
+async def test_get_settlements_received_excludes_settlements_this_user_paid_out(db_session):
+    alice, bob = await _make_users(db_session, "-recv2")
+    await record_settlement(db_session, from_user_id=alice.id, to_user_id=bob.id, amount=Decimal("50.00"), settled_date="2026-07-10")
+
+    received = await get_settlements_received(db_session, user_id=alice.id)
+    assert received == []
+
+
+async def test_get_settlements_received_is_sorted_oldest_first(db_session):
+    alice, bob = await _make_users(db_session, "-recv3")
+    await record_settlement(db_session, from_user_id=bob.id, to_user_id=alice.id, amount=Decimal("20.00"), settled_date="2026-07-15")
+    await record_settlement(db_session, from_user_id=bob.id, to_user_id=alice.id, amount=Decimal("10.00"), settled_date="2026-07-01")
+
+    received = await get_settlements_received(db_session, user_id=alice.id)
+    assert [s.settled_date for s in received] == ["2026-07-01", "2026-07-15"]
+
+
+async def test_get_settlements_received_is_empty_with_no_settlements_at_all(db_session):
+    alice, _ = await _make_users(db_session, "-recv4")
+    received = await get_settlements_received(db_session, user_id=alice.id)
+    assert received == []
