@@ -1149,33 +1149,60 @@ async def delete_shared_expense(db: AsyncSession, *, expense_id: str) -> None:
 async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
     """
     "Who owes me, who do I owe" across every group this user is in.
-    Includes both live friends (matched by user_id) and frozen friends
-    -- someone whose account was deleted, matched by email_ref instead
+    Includes live friends (matched by user_id), frozen friends --
+    someone whose account was deleted, matched by email_ref instead
     (see compute_balance_with_frozen_friend's docstring for the one
     real gap that comes with that: their pre-deletion settlements
     aren't reflected, since Settlement rows are never frozen, only
-    split/expense rows are). This used to only cover live friends,
-    a documented gap -- a frozen friend's balance was invisible here
-    even though their historical expenses stayed visible inside the
-    group's own detail view.
+    split/expense rows are) -- AND pending friends, someone who's
+    never signed up at all but still has a real balance worth
+    tracking (the whole point of splitting an expense with someone
+    you haven't onboarded yet). This used to only cover live friends,
+    a documented gap -- balances for the other two categories were
+    invisible here even though their historical expenses stayed
+    visible inside the group's own detail view.
+
+    BUG FIXED HERE, found via a real report: user_id IS NULL on a
+    split/expense row means one of TWO different things (see
+    create_shared_expense's docstring) -- "this person's account was
+    deleted" (genuinely frozen) OR "this person never signed up in
+    the first place" (still just a pending invite, PendingGroupInvite
+    row still exists for them). The first pass at frozen-friend
+    support treated BOTH as "(account deleted)," which is wrong and
+    needlessly alarming for the much more common pending case. The
+    NEXT pass (still within this same fix) correctly stopped
+    mislabeling pending participants as frozen, but as a side effect
+    dropped them from this list ENTIRELY -- they matched neither the
+    live-user branch nor the (now correctly narrowed) frozen branch,
+    so a real, trackable balance with someone silently vanished from
+    the summary. Fixed properly by tracking pending and frozen as two
+    separate dicts, keyed the same way (email_ref -> name), and
+    including both in the final balances list -- only frozen ones get
+    is_frozen: True.
     """
     my_groups = await get_user_groups(db, user_id=user_id)
     other_user_ids: set[str] = set()
     frozen_friends: dict[str, str] = {}  # email_ref -> name_snapshot
+    pending_friends: dict[str, str] = {}  # email_ref -> name_snapshot
     for group in my_groups:
         members = await get_group_members(db, group_id=group.id)
         for m in members:
             if m.user_id and m.user_id != user_id:
                 other_user_ids.add(m.user_id)
 
+        pending = await get_group_pending_invites(db, group_id=group.id)
+        pending_email_refs = {email_reference(inv["email"]) for inv in pending}
+
         expenses = await get_group_expenses(db, group_id=group.id)
         for expense in expenses:
             if expense.paid_by is None:
-                frozen_friends[expense.paid_by_email_ref] = expense.paid_by_name_snapshot
+                target = pending_friends if expense.paid_by_email_ref in pending_email_refs else frozen_friends
+                target[expense.paid_by_email_ref] = expense.paid_by_name_snapshot
             splits_result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense.id))
             for split in splits_result.scalars().all():
                 if split.user_id is None:
-                    frozen_friends[split.email_ref] = split.name_snapshot
+                    target = pending_friends if split.email_ref in pending_email_refs else frozen_friends
+                    target[split.email_ref] = split.name_snapshot
 
     balances = []
     for other_id in other_user_ids:
@@ -1185,6 +1212,11 @@ async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
         balance = await compute_balance(db, user_a=user_id, user_b=other_id)
         if balance != Decimal("0.00"):
             balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance, "is_frozen": False})
+
+    for email_ref, name in pending_friends.items():
+        balance = await compute_balance_with_frozen_friend(db, user_id=user_id, friend_email_ref=email_ref)
+        if balance != Decimal("0.00"):
+            balances.append({"user_id": None, "name": name, "balance": balance, "is_frozen": False})
 
     for email_ref, name in frozen_friends.items():
         balance = await compute_balance_with_frozen_friend(db, user_id=user_id, friend_email_ref=email_ref)

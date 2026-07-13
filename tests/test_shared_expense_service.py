@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.core.security import hash_password
 from app.models.group_member import GroupMember
+from app.models.pending_group_invite import PendingGroupInvite
 from app.models.shared_expense_comment import SharedExpenseComment
 from app.models.shared_expense_split import SharedExpenseSplit
 from app.models.user import User
@@ -502,6 +503,57 @@ async def test_get_all_balances_includes_a_frozen_friend(db_session):
     assert balances[0]["user_id"] is None
     assert balances[0]["is_frozen"] is True
     assert balances[0]["balance"] == Decimal("-50.00")
+
+
+async def test_get_all_balances_does_not_mislabel_a_never_signed_up_pending_participant_as_frozen(db_session):
+    # REGRESSION -- reported directly: two real friends (never having
+    # deleted anything) showed up as "(account deleted)" in production.
+    # Root cause: user_id IS NULL on a split means EITHER "this
+    # person's account was deleted" (genuinely frozen) OR "this person
+    # never signed up at all" (still just a pending invite) -- see
+    # create_shared_expense's own docstring, which already documented
+    # this ambiguity. The first pass at frozen-friend support treated
+    # both as frozen. A pending participant -- PendingGroupInvite row
+    # still exists for them, they've simply never gotten around to
+    # signing up -- must NOT show "(account deleted)."
+    alice, _ = await _make_users(db_session, "-pending-notfrozen")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[])
+    invite = PendingGroupInvite(group_id=group.id, email="bharath@example.com", name="Bharath k", invited_by=alice.id)
+    db_session.add(invite)
+    await db_session.commit()
+
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "bharath@example.com", "name": "Bharath k"}],
+    )
+
+    balances = await get_all_balances(db_session, user_id=alice.id)
+    assert len(balances) == 1
+    assert balances[0]["name"] == "Bharath k"
+    assert balances[0]["is_frozen"] is False  # NOT "(account deleted)" -- they never had an account
+
+
+async def test_get_all_balances_correctly_distinguishes_pending_from_frozen_in_the_same_group(db_session):
+    # Both situations at once, in the SAME group -- Bob genuinely
+    # deleted his account, Carol never signed up at all. Confirms the
+    # fix distinguishes them per-person, not just globally.
+    alice, bob = await _make_users(db_session, "-mixed")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+    invite = PendingGroupInvite(group_id=group.id, email="carol@example.com", name="Carol", invited_by=alice.id)
+    db_session.add(invite)
+    await db_session.commit()
+
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("90.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+        pending_participants=[{"email": "carol@example.com", "name": "Carol"}],
+    )
+    await freeze_user_references(db_session, user_id=bob.id)
+
+    balances = await get_all_balances(db_session, user_id=alice.id)
+    by_name = {b["name"]: b["is_frozen"] for b in balances}
+    assert by_name == {"Bob": True, "Carol": False}
 
 
 async def test_get_all_balances_omits_a_frozen_friend_whose_balance_is_now_zero(db_session):
