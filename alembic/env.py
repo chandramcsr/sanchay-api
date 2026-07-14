@@ -22,6 +22,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=True,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -34,7 +35,16 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        # render_as_batch: SQLite (used for local dev/testing per this
+        # repo's README) can't ALTER a table to add a foreign key
+        # constraint directly -- it needs "batch mode" (copy-and-move
+        # via a temp table). This was never hit until the migration
+        # that added Settlement.group_id, the first one in this repo's
+        # history to add a FK to an existing table rather than create
+        # a new one outright. Safe to leave on unconditionally: it's a
+        # transparent no-op for PostgreSQL (production), which
+        # supports direct ALTER natively.
+        context.configure(connection=connection, target_metadata=target_metadata, render_as_batch=True)
         with context.begin_transaction():
             context.run_migrations()
 

@@ -1432,3 +1432,112 @@ async def test_settle_i_paid_them_with_a_pending_participant_still_works(client)
     assert body["from_user_id"] == alice_id
     assert body["to_user_id"] is None
     assert body["to_name"] == "Bharath k"
+
+
+# ---------- Settling within a group vs. as individuals ----------
+
+
+async def test_group_scoped_settlement_shows_in_group_settlements_endpoint(client):
+    alice_token, alice_id = await _signup(client, "alice-groupset1@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-groupset1@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip", "members": [{"email": "bob-groupset1@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_user_id": bob_id, "group_id": group_id, "amount": 20.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 201
+    assert r.json()["group_id"] == group_id
+
+    listed = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/settlements", headers=_auth(alice_token))
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["amount"] == "20.00"
+
+
+async def test_individual_settlement_does_not_show_in_any_groups_settlements(client):
+    alice_token, alice_id = await _signup(client, "alice-groupset2@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-groupset2@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Trip", "members": [{"email": "bob-groupset2@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_user_id": bob_id, "amount": 20.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 201
+    assert r.json()["group_id"] is None
+
+    listed = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/settlements", headers=_auth(alice_token))
+    assert listed.json() == []
+
+
+async def test_group_scoped_settlement_rejected_if_counterparty_not_a_member(client):
+    alice_token, alice_id = await _signup(client, "alice-groupset3@example.com", "Alice")
+    _, bob_id = await _signup(client, "bob-groupset3@example.com", "Bob")
+    # Bob is NOT a member of this group.
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Solo Trip", "members": []},
+    )
+    group_id = group_resp.json()["id"]
+
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_user_id": bob_id, "group_id": group_id, "amount": 20.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 400
+
+
+async def test_group_scoped_settlement_rejected_if_caller_not_a_member(client):
+    alice_token, alice_id = await _signup(client, "alice-groupset4@example.com", "Alice")
+    eve_token, eve_id = await _signup(client, "eve-groupset4@example.com", "Eve")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Alice Only", "members": []},
+    )
+    group_id = group_resp.json()["id"]
+
+    # Eve isn't in this group at all, tries to settle "within" it anyway.
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(eve_token),
+        json={"counterparty_user_id": alice_id, "group_id": group_id, "amount": 20.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code in (403, 404)
+
+
+async def test_group_scoped_settlement_with_a_pending_participant_in_that_group(client):
+    alice_token, alice_id = await _signup(client, "alice-groupset5@example.com", "Alice")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Roomies", "members": []},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-08",
+            "participant_ids": [alice_id],
+            "pending_participants": [{"email": "carol-groupset5@example.com", "name": "Carol"}],
+        },
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("carol-groupset5@example.com")
+
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_email_ref": ref, "direction": "they_paid_me", "group_id": group_id, "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 201
+    assert r.json()["group_id"] == group_id
+
+    listed = await client.get(f"/api/v1/shared-expenses/groups/{group_id}/settlements", headers=_auth(alice_token))
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["from_name"] == "Carol"

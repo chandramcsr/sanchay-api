@@ -678,7 +678,7 @@ async def record_settlement(
     db: AsyncSession, *,
     from_user_id: str | None = None, from_email_ref: str | None = None, from_name: str | None = None,
     to_user_id: str | None = None, to_email_ref: str | None = None, to_name: str | None = None,
-    amount: Decimal, settled_date: str,
+    amount: Decimal, settled_date: str, group_id: str | None = None,
 ) -> Settlement:
     """
     Records a real payment. Either side can be a real, signed-up user
@@ -690,6 +690,11 @@ async def record_settlement(
     combinations are actually allowed (see SettlementCreateRequest's
     docstring for why "they paid me" is restricted to a pending/frozen
     counterparty), this function just trusts what it's given.
+
+    group_id is optional and purely about where this shows up as an
+    activity item (see Settlement's docstring) -- it does not change
+    how the balance between the two people is computed; that's always
+    a cross-group running net regardless of group_id.
 
     A pending/frozen party's row is created with user_id=NULL.
     reconnect_by_email() already re-attaches it (populates user_id,
@@ -716,6 +721,7 @@ async def record_settlement(
         resolved_to_name = to_name or "Unknown"
 
     settlement = Settlement(
+        group_id=group_id,
         from_user_id=from_user_id,
         from_email_ref=resolved_from_email_ref,
         from_name_snapshot=resolved_from_name,
@@ -731,7 +737,7 @@ async def record_settlement(
     return settlement
 
 
-async def find_pending_or_frozen_name(db: AsyncSession, *, user_id: str, email_ref: str) -> str | None:
+async def find_pending_or_frozen_name(db: AsyncSession, *, user_id: str, email_ref: str, group_id: str | None = None) -> str | None:
     """
     Looks up the display name for a specific pending/frozen
     email_ref, but ONLY if it's someone the caller actually shares a
@@ -739,6 +745,11 @@ async def find_pending_or_frozen_name(db: AsyncSession, *, user_id: str, email_r
     for a user_id-IS-NULL match, same data get_all_balances already
     builds frozen_friends/pending_friends from, just narrowed to one
     specific email_ref instead of collecting all of them.
+
+    If group_id is given, the search is narrowed to just that one
+    group -- used to validate a group-scoped settlement actually
+    involves someone connected to THAT group specifically, not merely
+    some other group the caller happens to also share with them.
 
     This is what stops record_settlement's pending-target path from
     being a way to fabricate a settlement against an arbitrary email
@@ -748,7 +759,10 @@ async def find_pending_or_frozen_name(db: AsyncSession, *, user_id: str, email_r
     Returns None if no match, which the caller should treat as "reject
     the request," not "use a fallback name."
     """
-    my_groups = await get_user_groups(db, user_id=user_id)
+    if group_id:
+        my_groups = [g for g in await get_user_groups(db, user_id=user_id) if g.id == group_id]
+    else:
+        my_groups = await get_user_groups(db, user_id=user_id)
     for group in my_groups:
         expenses = await get_group_expenses(db, group_id=group.id)
         for expense in expenses:
@@ -1183,6 +1197,13 @@ async def ensure_pending_invite(
 async def get_group_expenses(db: AsyncSession, *, group_id: str) -> list[SharedExpense]:
     result = await db.execute(
         select(SharedExpense).where(SharedExpense.group_id == group_id).order_by(SharedExpense.expense_date.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_group_settlements(db: AsyncSession, *, group_id: str) -> list[Settlement]:
+    result = await db.execute(
+        select(Settlement).where(Settlement.group_id == group_id).order_by(Settlement.settled_date.desc())
     )
     return list(result.scalars().all())
 

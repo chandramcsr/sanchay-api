@@ -401,6 +401,31 @@ async def list_group_expenses(request: Request,
     return result
 
 
+@router.get("/groups/{group_id}/settlements", response_model=list[SettlementOut])
+@limiter.limit("120/minute")
+async def list_group_settlements(request: Request, 
+    group_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[SettlementOut]:
+    """
+    Settlements explicitly recorded against this group (group_id set
+    at settle time) -- NOT every settlement between two people who
+    happen to share this group. A settlement is a private, cross-group
+    "we're square" between two people by default; it only shows up
+    here if it was deliberately scoped to this group.
+    """
+    await _require_group_member(db, group_id=group_id, user_id=current_user.id)
+    settlements = await svc.get_group_settlements(db, group_id=group_id)
+    return [
+        SettlementOut(
+            id=s.id, group_id=s.group_id,
+            from_user_id=s.from_user_id, from_name=s.from_name_snapshot,
+            to_user_id=s.to_user_id, to_name=s.to_name_snapshot,
+            amount=str(s.amount), settled_date=s.settled_date,
+        )
+        for s in settlements
+    ]
+
+
 def _rule_to_out(rule) -> RecurringRuleOut:
     return RecurringRuleOut(
         id=rule.id,
@@ -692,6 +717,9 @@ async def record_settlement(request: Request,
     if payload.direction not in ("i_paid_them", "they_paid_me"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="direction must be 'i_paid_them' or 'they_paid_me'")
 
+    if payload.group_id:
+        await _require_group_member(db, group_id=payload.group_id, user_id=current_user.id)
+
     counterparty_name: str | None = None
     if payload.counterparty_user_id:
         counterparty = await user_repository.get_by_id(db, payload.counterparty_user_id)
@@ -703,15 +731,22 @@ async def record_settlement(request: Request,
             # recording it unilaterally here would be one person
             # silently editing the other side of a mutual ledger.
             raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Ask them to record this from their own account — recording a real user's payment on their behalf isn't supported")
+        if payload.group_id and not await svc.is_group_member(db, group_id=payload.group_id, user_id=payload.counterparty_user_id):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="That person isn't a member of this group")
     else:
         # Pending/frozen counterparty — never trust a client-supplied
         # name for someone else's identity. The name is only ever
         # derived from real shared-expense history the caller actually
         # has with this specific email_ref; if there's no match, this
         # isn't a real counterparty this user has any connection to.
-        counterparty_name = await svc.find_pending_or_frozen_name(db, user_id=current_user.id, email_ref=payload.counterparty_email_ref)
+        # Scoped to just group_id when given, so a group-scoped
+        # settlement actually involves someone connected to THAT
+        # group, not merely some other group the caller also shares
+        # with them.
+        counterparty_name = await svc.find_pending_or_frozen_name(db, user_id=current_user.id, email_ref=payload.counterparty_email_ref, group_id=payload.group_id)
         if counterparty_name is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No shared expense history found with that person")
+            detail = "No shared expense history found with that person in this group" if payload.group_id else "No shared expense history found with that person"
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail=detail)
 
     if payload.direction == "i_paid_them":
         settle_kwargs = dict(
@@ -731,10 +766,12 @@ async def record_settlement(request: Request,
         db,
         amount=_to_decimal(payload.amount, "amount"),
         settled_date=payload.settled_date,
+        group_id=payload.group_id,
         **settle_kwargs,
     )
     return SettlementOut(
         id=settlement.id,
+        group_id=settlement.group_id,
         from_user_id=settlement.from_user_id,
         from_name=settlement.from_name_snapshot,
         to_user_id=settlement.to_user_id,

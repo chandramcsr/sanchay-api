@@ -224,16 +224,24 @@ class SettlementCreateRequest(BaseModel):
       themselves via "i_paid_them" instead. A pending/frozen person can
       never log in to confirm anything at all, so this is the only way
       their side of a real payment ever gets recorded.
+
+    group_id: optional. Doesn't change the balance calculation (always
+    a cross-group running net between the two people) -- purely about
+    whether this settlement also shows up as an activity item in that
+    group's history, the same way an expense does. Left unset, this is
+    a private, cross-group "we're square" between two people.
     """
     counterparty_user_id: str | None = None
     counterparty_email_ref: str | None = None
     direction: str = "i_paid_them"
+    group_id: str | None = None
     amount: float = Field(gt=0)
     settled_date: str  # YYYY-MM-DD
 
 
 class SettlementOut(BaseModel):
     id: str
+    group_id: str | None = None
     from_user_id: str | None
     from_name: str
     to_user_id: str | None

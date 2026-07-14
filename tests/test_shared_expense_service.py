@@ -22,6 +22,7 @@ from app.services.shared_expense_service import (
     freeze_user_references,
     get_all_balances,
     get_balance_breakdown,
+    get_group_settlements,
     get_settlements_received,
     reconnect_by_email,
     record_settlement,
@@ -929,3 +930,74 @@ async def test_reconnect_by_email_reattaches_a_pending_settlement_when_that_pers
     # reflects the settlement, not just the pre-settlement expense total.
     final_balance = await compute_balance(db_session, user_a=bharath.id, user_b=alice.id)
     assert final_balance == Decimal("0.00")
+
+
+# ---------- Group-scoped settlements ----------
+#
+# Direct follow-up: settling with someone should be able to show as an
+# activity item within the group it relates to, since a settlement is
+# between two people (not tied to one group by default) and they might
+# share multiple groups. group_id is optional -- unset stays the
+# private, cross-group "we're square" behavior from before.
+
+
+async def test_record_settlement_with_a_group_id_stores_it(db_session):
+    alice, bob = await _make_users(db_session, "-groupsettle1")
+    group = await create_group(db_session, name="Trip", created_by=alice.id, member_ids=[bob.id])
+
+    settlement = await record_settlement(
+        db_session, from_user_id=alice.id, to_user_id=bob.id,
+        amount=Decimal("30.00"), settled_date="2026-07-10", group_id=group.id,
+    )
+    assert settlement.group_id == group.id
+
+
+async def test_record_settlement_without_a_group_id_is_still_the_default(db_session):
+    alice, bob = await _make_users(db_session, "-groupsettle2")
+    settlement = await record_settlement(
+        db_session, from_user_id=alice.id, to_user_id=bob.id,
+        amount=Decimal("30.00"), settled_date="2026-07-10",
+    )
+    assert settlement.group_id is None
+
+
+async def test_get_group_settlements_only_returns_settlements_scoped_to_that_group(db_session):
+    alice, bob = await _make_users(db_session, "-groupsettle3")
+    group_a = await create_group(db_session, name="Trip A", created_by=alice.id, member_ids=[bob.id])
+    group_b = await create_group(db_session, name="Trip B", created_by=alice.id, member_ids=[bob.id])
+
+    in_a = await record_settlement(
+        db_session, from_user_id=alice.id, to_user_id=bob.id,
+        amount=Decimal("10.00"), settled_date="2026-07-10", group_id=group_a.id,
+    )
+    await record_settlement(  # scoped to group B — should NOT show in group A's list
+        db_session, from_user_id=alice.id, to_user_id=bob.id,
+        amount=Decimal("20.00"), settled_date="2026-07-10", group_id=group_b.id,
+    )
+    await record_settlement(  # unscoped (individual) — should NOT show in either group's list
+        db_session, from_user_id=alice.id, to_user_id=bob.id,
+        amount=Decimal("5.00"), settled_date="2026-07-10",
+    )
+
+    group_a_settlements = await get_group_settlements(db_session, group_id=group_a.id)
+    assert [s.id for s in group_a_settlements] == [in_a.id]
+
+
+async def test_find_pending_or_frozen_name_scoped_to_a_group_rejects_a_different_group(db_session):
+    alice, _ = await _make_users(db_session, "-groupsettle4")
+    group_a = await create_group(db_session, name="Trip A", created_by=alice.id, member_ids=[])
+    group_b = await create_group(db_session, name="Trip B", created_by=alice.id, member_ids=[])
+    await create_shared_expense(
+        db_session, group_id=group_a.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("50.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "carol-groupsettle4@example.com", "name": "Carol"}],
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("carol-groupsettle4@example.com")
+
+    # Carol IS a known pending participant, but only in group A.
+    name_in_a = await find_pending_or_frozen_name(db_session, user_id=alice.id, email_ref=ref, group_id=group_a.id)
+    assert name_in_a == "Carol"
+
+    name_in_b = await find_pending_or_frozen_name(db_session, user_id=alice.id, email_ref=ref, group_id=group_b.id)
+    assert name_in_b is None

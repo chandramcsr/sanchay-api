@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="1.27.0",
+    version="1.28.0",
     lifespan=lifespan,
 )
 
