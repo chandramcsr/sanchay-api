@@ -1,16 +1,18 @@
 # Sanchay API
 
-Identity and authentication service for [Sanchay](https://chandramcsr.github.io/ledger-app/)
-— signup, login, JWT-based auth. Built with FastAPI, SQLAlchemy, Alembic,
-and PostgreSQL.
+Identity, encrypted backup, and shared-expense tracking for [Sanchay](https://chandramcsr.github.io/ledger-app/).
+Built with FastAPI, SQLAlchemy, Alembic, and PostgreSQL.
 
-**Scope, deliberately narrow:** this service stores user identity
-(email, hashed password, display name) — nothing else. It does **not**
-store transactions, accounts, budgets, or any financial data; that
-still lives entirely on-device in the Sanchay app. This is the first
-building block toward multi-device sync (Phase 1d in the architecture
-doc), not the sync itself. Keeping that boundary explicit is what keeps
-Sanchay's "no data collected" privacy story true as this grows.
+**Scope, deliberately narrow:** your *personal* ledger — transactions,
+accounts, budgets, recurring rules — never touches this server unless
+you turn Sync on, and even then it arrives encrypted, unreadable
+without a passphrase this server never sees. This service does store
+two other things, on purpose: your identity (email, hashed password,
+display name), and shared-expense data for groups you're actually
+in — expense descriptions, amounts, and who owes whom, since that
+information has to be shared with the other people in the group to
+be useful at all. Nothing here is sold, shared with advertisers, or
+used for anything beyond making the app work.
 
 ## Architecture
 
@@ -165,37 +167,81 @@ export DATABASE_URL=sqlite:///:memory:
 pytest tests/ -v
 ```
 
-22 tests: signup/login flows, JWT round-trip and tamper/expiry
-rejection, password hashing correctness, and two security-specific
-checks worth knowing about:
+321 tests across auth, sync, and the shared-expenses subsystem. A few
+worth knowing about specifically:
 
 - **Account enumeration**: a wrong password and a nonexistent email
   return the identical error message — telling those apart is itself
-  a data leak.
+  a data leak. Every group/expense-touching endpoint applies the same
+  principle: not a member → 404, never 403.
 - **No password leakage**: every response is scanned to confirm
   `password` / `hashed_password` never appear, in any endpoint.
+- **Rate limiting**: dedicated tests confirm a 429 actually triggers
+  on the endpoints that declare a limit, not just that the decorator
+  is present.
+- **Pending-vs-frozen identity**: a real bug once shipped where a
+  never-signed-up participant (added by email, hasn't joined yet) was
+  indistinguishable from a genuinely deleted account — both showed
+  the same "(account deleted)" label. Regression tests confirm the
+  two cases render differently and don't drift back together.
 
 ## API
 
 Business endpoints are versioned under `/api/v1`; ops endpoints (`/`, `/health`) deliberately aren't — they're not part of the API surface a client integrates against, and versioning an uptime ping buys nothing.
 
+### Ops
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | — | Liveness check (real DB connectivity check, returns 503 on failure) |
 | GET | `/` | — | Service info, mainly for Render's uptime ping |
+
+### Auth & identity
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
 | POST | `/api/v1/auth/signup` | — | Create account, returns a 12-hour access token + a 30-day refresh token |
 | POST | `/api/v1/auth/login` | — | Returns a 12-hour access token + a 30-day refresh token |
-| POST | `/api/v1/auth/refresh` | — (refresh token in body) | Trades a valid refresh token for a fresh access+refresh pair. Rotating: the presented token is revoked on use, so it can never be replayed |
-| GET | `/api/v1/auth/me` | Bearer token | Current user's profile (includes `last_login_at`) |
-| GET | `/api/v1/auth/login-history` | Bearer token | Recent login attempts (success and failure) against your own account |
+| POST | `/api/v1/auth/refresh` | Refresh token in body | Trades a valid refresh token for a fresh access+refresh pair. Rotating: the presented token is revoked on use |
+| GET | `/api/v1/auth/me` | Bearer token | Current user's profile |
+| DELETE | `/api/v1/auth/me` | Bearer token + password | Permanently deletes the account and every table tied to it — immediate, no recovery |
+| PUT | `/api/v1/auth/me/avatar` | Bearer token | Upload/replace profile photo |
+| DELETE | `/api/v1/auth/me/avatar` | Bearer token | Remove profile photo |
+| GET | `/api/v1/auth/login-history` | Bearer token | Recent sign-in attempts (success and failure) against your own account |
+| POST | `/api/v1/auth/verify-email` | Token-based | Marks the account verified — soft verification, not required to use the app |
+| POST | `/api/v1/auth/resend-verification` | Bearer token | Sends a fresh verification email (no-op if already verified) |
+| POST | `/api/v1/auth/resend-verification-by-email` | — | Same, for someone not currently signed in |
+| POST | `/api/v1/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
+| POST | `/api/v1/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
+
+### Sync (encrypted personal ledger backup)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
 | GET | `/api/v1/sync/status` | Bearer token | Whether a cloud backup exists, and its version |
 | GET | `/api/v1/sync/pull` | Bearer token | The encrypted ledger blob (opaque to this server) |
 | PUT | `/api/v1/sync/push` | Bearer token | Replace the encrypted ledger blob — requires `based_on_version` to match current, or returns 409 |
-| DELETE | `/api/v1/auth/me` | Bearer token + password | Permanently deletes the account and all associated data (sync backup, login history, reset tokens) — immediate, no recovery |
-| POST | `/api/v1/auth/verify-email` | None (token-based) | Marks the account verified. Soft verification — not required to sign in or use the app |
-| POST | `/api/v1/auth/resend-verification` | Bearer token | Sends a fresh verification email (no-op if already verified) |
-| POST | `/auth/forgot-password` | — | Request a reset link (always 200, enumeration-safe) |
-| POST | `/auth/reset-password` | — | Exchange a valid reset token for a new password + JWT |
+
+### Shared expenses (groups, splits, settlements)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/shared-expenses/groups` | Bearer token | Create a group, optionally inviting members by email |
+| GET | `/api/v1/shared-expenses/groups` | Bearer token | Groups you're a member of |
+| GET / PATCH / DELETE | `/api/v1/shared-expenses/groups/{id}` | Bearer token | Group detail, rename, delete |
+| POST / DELETE | `/api/v1/shared-expenses/groups/{id}/members` | Bearer token | Add or remove a member |
+| DELETE | `/api/v1/shared-expenses/groups/{id}/pending-invites` | Bearer token | Cancel an invite that hasn't been accepted yet |
+| GET | `/api/v1/shared-expenses/invites/{id}` | — | Preview an invite before signing up |
+| POST | `/api/v1/shared-expenses/invites/{id}/accept` | Bearer token | Join a group via invite |
+| POST / GET | `/api/v1/shared-expenses/groups/{id}/expenses` | Bearer token | Create or list a group's expenses |
+| GET / PATCH / DELETE | `/api/v1/shared-expenses/expenses/{id}` | Bearer token | Expense detail, edit, delete |
+| GET / POST | `/api/v1/shared-expenses/expenses/{id}/comments` | Bearer token | Comment thread on an expense |
+| POST / GET / PATCH / DELETE | `/api/v1/shared-expenses/groups/{id}/recurring`, `/recurring/{id}` | Bearer token | Recurring shared-expense rules |
+| GET | `/api/v1/shared-expenses/balances` | Bearer token | Net balance with every person you share a group with, live or frozen (deleted-account) |
+| GET | `/api/v1/shared-expenses/balances/{other_user_id}/breakdown` | Bearer token | Itemized history behind one balance |
+| GET | `/api/v1/shared-expenses/groups/{id}/simplified-debts` | Bearer token | Greedy debt-simplification — the minimum set of payments that settles a group |
+| POST | `/api/v1/shared-expenses/settlements` | Bearer token | Record yourself paying someone back |
+| GET | `/api/v1/shared-expenses/settlements/received` | Bearer token | Settlements paid *to* you — lets your own device notice and reconcile money it doesn't know landed yet |
 
 Full interactive docs (Swagger UI) at `/docs` once running.
 
@@ -223,39 +269,20 @@ container start via `CMD` in the Dockerfile.
 
 ## What's deliberately not here yet
 
-- **Email verification** — signup is currently email+password only,
-  no confirmation email. Fine for early testing; add before any real
-  public signup.
-- ~~No password reset~~ — **fixed**: full forgot-password/reset-password flow (`app/routers/auth.py`), single-use SHA-256-hashed tokens with 30-minute expiry (`app/models/password_reset_token.py`), rate limited (3 requests/hour to request, 5/hour to reset), and real email delivery via Resend (`app/core/email.py`) once `RESEND_API_KEY` is set — falls back to logging the link when it isn't, so local dev/tests need zero config.
-- **Rate limiting** — login/signup endpoints have no throttling yet;
-  add before this is internet-facing (e.g. slowapi or a reverse-proxy
-  rule).
-- **Refresh tokens** — access tokens are long-lived (7 days) with no
-  refresh/revoke mechanism. Fine for v1; a refresh-token flow is the
-  natural next step if that expiry feels wrong in practice.
-- ~~No password reset~~ — **built, but not fully wired**: the
-  request/confirm flow, token generation (hashed, single-use,
-  30-minute expiry), and rate limiting are all real and tested. What's
-  missing is an actual email provider — `app/core/email.py` currently
-  logs the reset link to stdout instead of sending it (clearly marked
-  `LoggingEmailSender`, DEV-ONLY in the code). Swapping in a real
-  provider (Resend, SendGrid, Postmark) is a one-file change behind
-  the `EmailSender` interface; see the extension-point example in that
-  file. **Do not consider this feature complete for real users until
-  a real sender is wired in** — right now, anyone who forgets their
-  password has no way to actually receive the link.
-- **No email verification** at signup — someone could sign up with an
-  email they don't own. Combined with the point above, wiring a real
-  email provider would let both gaps be closed together (verification
-  link + reset link use the same underlying "send an email" plumbing).
-- ~~422 validation errors echo the submitted password~~ — **fixed**:
-  a custom exception handler (`app/core/error_handlers.py`) redacts
-  any `password` field from validation error responses before they
-  leave the server.
-- ~~No rate limiting~~ — **fixed**: login is limited to 5 attempts/min
-  and signup to 10/min per IP, via `slowapi` (`app/core/limiter.py`).
-  Worth revisiting the exact numbers once there's real traffic to
-  learn from; these are reasonable starting guesses, not tuned values.
-- **Syncing actual ledger data** — this is Phase 1d, much larger
-  (end-to-end encryption, conflict resolution, an op-log), and comes
-  after this identity layer proves out.
+Everything below was accurate as "not built" at some earlier point and
+has since been built — email verification, password reset with real
+delivery, rate limiting, refresh tokens, and sync are all real and
+covered above. What's actually still out of scope, on purpose:
+
+- **Live multi-device merge sync** — Sync today is whole-blob replace
+  with version-conflict detection (see `EncryptedLedger`'s docstring
+  in `app/models/encrypted_ledger.py`): a stale push is rejected, not
+  silently overwritten, but two devices editing at the same time still
+  requires a manual pull-and-retry, not an automatic merge. A real
+  merge needs an operation log or CRDT-style structure — meaningfully
+  larger scope, not attempted here.
+- **Infrastructure scaling** (load balancer, CDN, read replica, object
+  storage, connection pooling) — deliberately not built ahead of real
+  load. See `architecture/Infrastructure_Architecture.png` for the
+  documented target state and the specific traffic threshold that
+  would trigger building each piece.
