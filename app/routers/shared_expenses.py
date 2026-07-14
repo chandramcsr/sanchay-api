@@ -687,16 +687,51 @@ async def add_comment(request: Request,
 async def record_settlement(request: Request, 
     payload: SettlementCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> SettlementOut:
-    to_user = await user_repository.get_by_id(db, payload.to_user_id)
-    if to_user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    if bool(payload.counterparty_user_id) == bool(payload.counterparty_email_ref):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Provide exactly one of counterparty_user_id or counterparty_email_ref")
+    if payload.direction not in ("i_paid_them", "they_paid_me"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="direction must be 'i_paid_them' or 'they_paid_me'")
+
+    counterparty_name: str | None = None
+    if payload.counterparty_user_id:
+        counterparty = await user_repository.get_by_id(db, payload.counterparty_user_id)
+        if counterparty is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+        if payload.direction == "they_paid_me":
+            # A real, signed-up counterparty can log in and confirm this
+            # themselves via "i_paid_them" on their own account —
+            # recording it unilaterally here would be one person
+            # silently editing the other side of a mutual ledger.
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Ask them to record this from their own account — recording a real user's payment on their behalf isn't supported")
+    else:
+        # Pending/frozen counterparty — never trust a client-supplied
+        # name for someone else's identity. The name is only ever
+        # derived from real shared-expense history the caller actually
+        # has with this specific email_ref; if there's no match, this
+        # isn't a real counterparty this user has any connection to.
+        counterparty_name = await svc.find_pending_or_frozen_name(db, user_id=current_user.id, email_ref=payload.counterparty_email_ref)
+        if counterparty_name is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="No shared expense history found with that person")
+
+    if payload.direction == "i_paid_them":
+        settle_kwargs = dict(
+            from_user_id=current_user.id,
+            to_user_id=payload.counterparty_user_id,
+            to_email_ref=payload.counterparty_email_ref,
+            to_name=counterparty_name,
+        )
+    else:
+        settle_kwargs = dict(
+            from_email_ref=payload.counterparty_email_ref,
+            from_name=counterparty_name,
+            to_user_id=current_user.id,
+        )
 
     settlement = await svc.record_settlement(
         db,
-        from_user_id=current_user.id,
-        to_user_id=payload.to_user_id,
         amount=_to_decimal(payload.amount, "amount"),
         settled_date=payload.settled_date,
+        **settle_kwargs,
     )
     return SettlementOut(
         id=settlement.id,
@@ -744,6 +779,7 @@ async def my_balances(request: Request, current_user: User = Depends(get_current
         balance = b["balance"]  # positive = current_user owes them; negative = they owe current_user
         result.append(BalanceOut(
             user_id=b["user_id"],
+            email_ref=b["email_ref"],
             name=b["name"],
             you_owe_them=str(max(balance, Decimal("0.00"))),
             they_owe_you=str(max(-balance, Decimal("0.00"))),

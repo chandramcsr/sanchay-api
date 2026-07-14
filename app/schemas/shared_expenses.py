@@ -209,7 +209,25 @@ class CommentOut(BaseModel):
 # ---------- settlements ----------
 
 class SettlementCreateRequest(BaseModel):
-    to_user_id: str
+    """
+    counterparty_user_id / counterparty_email_ref: exactly one, same
+    pending/frozen rule as everywhere else in this file.
+
+    direction:
+    - "i_paid_them" (default): the caller is paying the counterparty.
+      Works for a real, pending, or frozen counterparty.
+    - "they_paid_me": the counterparty paid the caller. Only valid
+      when the counterparty is pending or frozen (counterparty_email_ref
+      given, not counterparty_user_id) -- a REAL other user recording
+      unilaterally that they were paid is one person silently editing
+      the other side of a mutual ledger; that person should confirm it
+      themselves via "i_paid_them" instead. A pending/frozen person can
+      never log in to confirm anything at all, so this is the only way
+      their side of a real payment ever gets recorded.
+    """
+    counterparty_user_id: str | None = None
+    counterparty_email_ref: str | None = None
+    direction: str = "i_paid_them"
     amount: float = Field(gt=0)
     settled_date: str  # YYYY-MM-DD
 
@@ -239,9 +257,12 @@ class BalanceOut(BaseModel):
     was deleted, only email_ref + name_snapshot survive) -- is_frozen
     makes that explicit rather than making the caller infer it from a
     missing id, and gives the frontend a clean "(account deleted)"
-    label hook.
+    label hook. email_ref is populated whenever user_id is None
+    (pending or frozen) -- it's what the frontend passes back to
+    settle up with someone who doesn't have a real user_id yet.
     """
     user_id: str | None
+    email_ref: str | None = None
     name: str
     you_owe_them: str  # decimal string, "0.00" if not applicable
     they_owe_you: str  # decimal string, "0.00" if not applicable

@@ -675,17 +675,53 @@ async def add_comment(db: AsyncSession, *, expense_id: str, user_id: str, body: 
 
 
 async def record_settlement(
-    db: AsyncSession, *, from_user_id: str, to_user_id: str, amount: Decimal, settled_date: str
+    db: AsyncSession, *,
+    from_user_id: str | None = None, from_email_ref: str | None = None, from_name: str | None = None,
+    to_user_id: str | None = None, to_email_ref: str | None = None, to_name: str | None = None,
+    amount: Decimal, settled_date: str,
 ) -> Settlement:
-    from_user = await db.get(User, from_user_id)
-    to_user = await db.get(User, to_user_id)
+    """
+    Records a real payment. Either side can be a real, signed-up user
+    (from_user_id / to_user_id) or someone identified only by
+    email_ref + a name (from_email_ref+from_name / to_email_ref+to_name)
+    -- pending (never signed up) and frozen (deleted account) are
+    treated identically here, both are just "no real user_id yet."
+    Exactly one form is expected per side; the router enforces which
+    combinations are actually allowed (see SettlementCreateRequest's
+    docstring for why "they paid me" is restricted to a pending/frozen
+    counterparty), this function just trusts what it's given.
+
+    A pending/frozen party's row is created with user_id=NULL.
+    reconnect_by_email() already re-attaches it (populates user_id,
+    refreshes name_snapshot to their real account name) the moment
+    that email signs up -- same integration point that already does
+    this for SharedExpense/SharedExpenseSplit/GroupMember rows, so a
+    settlement recorded today correctly carries forward once the
+    person on the other end actually joins.
+    """
+    if from_user_id:
+        from_user = await db.get(User, from_user_id)
+        resolved_from_email_ref = email_reference(from_user.email) if from_user else ""
+        resolved_from_name = from_user.display_name if from_user else "Unknown"
+    else:
+        resolved_from_email_ref = from_email_ref or ""
+        resolved_from_name = from_name or "Unknown"
+
+    if to_user_id:
+        to_user = await db.get(User, to_user_id)
+        resolved_to_email_ref = email_reference(to_user.email) if to_user else ""
+        resolved_to_name = to_user.display_name if to_user else "Unknown"
+    else:
+        resolved_to_email_ref = to_email_ref or ""
+        resolved_to_name = to_name or "Unknown"
+
     settlement = Settlement(
         from_user_id=from_user_id,
-        from_email_ref=email_reference(from_user.email) if from_user else "",
-        from_name_snapshot=from_user.display_name if from_user else "Unknown",
+        from_email_ref=resolved_from_email_ref,
+        from_name_snapshot=resolved_from_name,
         to_user_id=to_user_id,
-        to_email_ref=email_reference(to_user.email) if to_user else "",
-        to_name_snapshot=to_user.display_name if to_user else "Unknown",
+        to_email_ref=resolved_to_email_ref,
+        to_name_snapshot=resolved_to_name,
         amount=amount,
         settled_date=settled_date,
     )
@@ -693,6 +729,36 @@ async def record_settlement(
     await db.commit()
     await db.refresh(settlement)
     return settlement
+
+
+async def find_pending_or_frozen_name(db: AsyncSession, *, user_id: str, email_ref: str) -> str | None:
+    """
+    Looks up the display name for a specific pending/frozen
+    email_ref, but ONLY if it's someone the caller actually shares a
+    group with -- scans the caller's own groups' split/expense rows
+    for a user_id-IS-NULL match, same data get_all_balances already
+    builds frozen_friends/pending_friends from, just narrowed to one
+    specific email_ref instead of collecting all of them.
+
+    This is what stops record_settlement's pending-target path from
+    being a way to fabricate a settlement against an arbitrary email
+    address you found somewhere -- a client can't just supply any
+    email_ref and a name; the name is only ever derived from a
+    match this user has real, verifiable shared-expense history with.
+    Returns None if no match, which the caller should treat as "reject
+    the request," not "use a fallback name."
+    """
+    my_groups = await get_user_groups(db, user_id=user_id)
+    for group in my_groups:
+        expenses = await get_group_expenses(db, group_id=group.id)
+        for expense in expenses:
+            if expense.paid_by is None and expense.paid_by_email_ref == email_ref:
+                return expense.paid_by_name_snapshot
+            splits_result = await db.execute(select(SharedExpenseSplit).where(SharedExpenseSplit.shared_expense_id == expense.id))
+            for split in splits_result.scalars().all():
+                if split.user_id is None and split.email_ref == email_ref:
+                    return split.name_snapshot
+    return None
 
 
 async def get_settlements_received(db: AsyncSession, *, user_id: str) -> list[Settlement]:
@@ -875,17 +941,18 @@ async def compute_group_debt_simplification(db: AsyncSession, *, group_id: str) 
 
 async def compute_balance_with_frozen_friend(db: AsyncSession, *, user_id: str, friend_email_ref: str) -> Decimal:
     """
-    Same running-total model as compute_balance(), for a friend whose
-    account has since been deleted (user_id is NULL on their split/
-    expense rows, email_ref is what's left to identify them). Settlements
-    aren't included here -- Settlement rows are keyed by user_id (both
-    sides), and a deleted user's settlements, like their user row
-    itself, are genuinely gone, not frozen. In practice this means a
-    frozen friend's balance here reflects the full historical expense
-    total, unadjusted for any settlement they made before deleting
-    their account -- a real, disclosed limitation of "freeze, don't
-    cascade," not an oversight: freeze_user_references() only ever
-    touched split/expense rows, never Settlement.
+    Same running-total model as compute_balance(), for a friend who
+    either never signed up (pending) or whose account has since been
+    deleted (frozen) -- either way, user_id is NULL on their own
+    rows and email_ref is what identifies them.
+
+    Settlements ARE included here now -- record_settlement supports
+    targeting a pending/frozen person by email_ref (no real user_id
+    required to record a real payment), and reconnect_by_email()
+    already re-attaches those rows' user_id once that email signs up,
+    so this was a real gap to close, not settle for: without this, a
+    settlement recorded against a pending friend would never actually
+    move their balance, making the whole feature pointless.
     """
     balance = Decimal("0.00")
 
@@ -904,6 +971,18 @@ async def compute_balance_with_frozen_friend(db: AsyncSession, *, user_id: str, 
     )
     for split, _expense in result.all():
         balance -= split.share_amount
+
+    result = await db.execute(
+        select(Settlement).where(Settlement.from_user_id == user_id, Settlement.to_email_ref == friend_email_ref)
+    )
+    for s in result.scalars().all():
+        balance -= s.amount
+
+    result = await db.execute(
+        select(Settlement).where(Settlement.from_email_ref == friend_email_ref, Settlement.to_user_id == user_id)
+    )
+    for s in result.scalars().all():
+        balance += s.amount
 
     return balance.quantize(Decimal("0.01"))
 
@@ -1211,17 +1290,17 @@ async def get_all_balances(db: AsyncSession, *, user_id: str) -> list[dict]:
             continue
         balance = await compute_balance(db, user_a=user_id, user_b=other_id)
         if balance != Decimal("0.00"):
-            balances.append({"user_id": other_id, "name": other_user.display_name, "balance": balance, "is_frozen": False})
+            balances.append({"user_id": other_id, "email_ref": None, "name": other_user.display_name, "balance": balance, "is_frozen": False})
 
     for email_ref, name in pending_friends.items():
         balance = await compute_balance_with_frozen_friend(db, user_id=user_id, friend_email_ref=email_ref)
         if balance != Decimal("0.00"):
-            balances.append({"user_id": None, "name": name, "balance": balance, "is_frozen": False})
+            balances.append({"user_id": None, "email_ref": email_ref, "name": name, "balance": balance, "is_frozen": False})
 
     for email_ref, name in frozen_friends.items():
         balance = await compute_balance_with_frozen_friend(db, user_id=user_id, friend_email_ref=email_ref)
         if balance != Decimal("0.00"):
-            balances.append({"user_id": None, "name": name, "balance": balance, "is_frozen": True})
+            balances.append({"user_id": None, "email_ref": email_ref, "name": name, "balance": balance, "is_frozen": True})
 
     return balances
 

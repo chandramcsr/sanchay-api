@@ -18,10 +18,12 @@ from app.services.shared_expense_service import (
     create_shared_expense,
     edit_shared_expense,
     ensure_pending_invite,
+    find_pending_or_frozen_name,
     freeze_user_references,
     get_all_balances,
     get_balance_breakdown,
     get_settlements_received,
+    reconnect_by_email,
     record_settlement,
     split_by_percentage,
     split_by_shares,
@@ -813,3 +815,117 @@ async def test_get_settlements_received_is_empty_with_no_settlements_at_all(db_s
     alice, _ = await _make_users(db_session, "-recv4")
     received = await get_settlements_received(db_session, user_id=alice.id)
     assert received == []
+
+
+# ---------- Settling with a pending/frozen participant ----------
+#
+# Direct request: settling with someone who hasn't signed up yet was
+# giving an error. Confirmed the real gap: Settlement.to_user_id was
+# required, with no way to target a pending/frozen person at all, even
+# though the model already had email_ref columns for exactly this.
+
+
+async def test_find_pending_or_frozen_name_returns_the_real_name_for_a_known_pending_participant(db_session):
+    alice, _ = await _make_users(db_session, "-findname1")
+    group = await create_group(db_session, name="Roomies", created_by=alice.id, member_ids=[])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "bharath@example.com", "name": "Bharath k"}],
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath@example.com")
+
+    name = await find_pending_or_frozen_name(db_session, user_id=alice.id, email_ref=ref)
+    assert name == "Bharath k"
+
+
+async def test_find_pending_or_frozen_name_returns_none_for_someone_the_caller_has_no_history_with(db_session):
+    alice, _ = await _make_users(db_session, "-findname2")
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("stranger@example.com")
+
+    name = await find_pending_or_frozen_name(db_session, user_id=alice.id, email_ref=ref)
+    assert name is None
+
+
+async def test_record_settlement_with_a_pending_recipient_creates_a_settlement_with_no_user_id(db_session):
+    alice, _ = await _make_users(db_session, "-recvsettle1")
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath@example.com")
+
+    settlement = await record_settlement(
+        db_session, from_user_id=alice.id, to_email_ref=ref, to_name="Bharath k",
+        amount=Decimal("50.00"), settled_date="2026-07-10",
+    )
+    assert settlement.to_user_id is None
+    assert settlement.to_email_ref == ref
+    assert settlement.to_name_snapshot == "Bharath k"
+    assert settlement.from_user_id == alice.id
+
+
+async def test_compute_balance_with_frozen_friend_nets_a_settlement_from_a_pending_participant(db_session):
+    alice, _ = await _make_users(db_session, "-netsettle2")
+    group = await create_group(db_session, name="Roomies", created_by=alice.id, member_ids=[])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "bharath@example.com", "name": "Bharath k"}],
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath@example.com")
+
+    before = await compute_balance_with_frozen_friend(db_session, user_id=alice.id, friend_email_ref=ref)
+    assert before == Decimal("-50.00")  # negative = Bharath owes Alice his $50 share
+
+    # Bharath (still pending) pays Alice back in real life; Alice records it
+    # on his behalf, since he has no account to confirm it himself.
+    settlement = await record_settlement(
+        db_session, from_email_ref=ref, from_name="Bharath k", to_user_id=alice.id,
+        amount=Decimal("50.00"), settled_date="2026-07-10",
+    )
+    assert settlement.from_user_id is None
+
+    after = await compute_balance_with_frozen_friend(db_session, user_id=alice.id, friend_email_ref=ref)
+    assert after == Decimal("0.00")  # settled — this is the whole point
+
+
+async def test_reconnect_by_email_reattaches_a_pending_settlement_when_that_person_signs_up(db_session):
+    # THE critical end-to-end scenario: settle with someone pending,
+    # then have them actually sign up, and confirm the settlement
+    # correctly carries forward -- both the raw Settlement row AND the
+    # balance computed from the now-real user_id.
+    alice, _ = await _make_users(db_session, "-reconnect-settle")
+    group = await create_group(db_session, name="Roomies", created_by=alice.id, member_ids=[])
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id],
+        pending_participants=[{"email": "bharath-signup@example.com", "name": "Bharath k"}],
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath-signup@example.com")
+
+    # Bharath (pending) paid Alice back his $50 share; Alice records it
+    # on his behalf since he has no account yet to confirm it himself.
+    settlement = await record_settlement(
+        db_session, from_email_ref=ref, from_name="Bharath k", to_user_id=alice.id,
+        amount=Decimal("50.00"), settled_date="2026-07-10",
+    )
+    assert settlement.from_user_id is None
+
+    # Bharath signs up for real.
+    bharath = User(email="bharath-signup@example.com", hashed_password="x", display_name="Bharath K.")
+    db_session.add(bharath)
+    await db_session.commit()
+    await db_session.refresh(bharath)
+
+    await reconnect_by_email(db_session, new_user=bharath)
+
+    await db_session.refresh(settlement)
+    assert settlement.from_user_id == bharath.id
+    assert settlement.from_name_snapshot == "Bharath K."  # refreshed to the real account name
+
+    # And the balance computed the NORMAL (real-user) way now correctly
+    # reflects the settlement, not just the pre-settlement expense total.
+    final_balance = await compute_balance(db_session, user_a=bharath.id, user_b=alice.id)
+    assert final_balance == Decimal("0.00")

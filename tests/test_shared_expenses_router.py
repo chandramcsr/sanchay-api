@@ -198,7 +198,7 @@ async def test_settlement_zeroes_out_the_balance_via_the_real_endpoint(client):
         json={"description": "Dinner", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
     )
 
-    r = await client.post("/api/v1/shared-expenses/settlements", headers=_auth(bob_token), json={"to_user_id": alice_id, "amount": 50.00, "settled_date": "2026-07-09"})
+    r = await client.post("/api/v1/shared-expenses/settlements", headers=_auth(bob_token), json={"counterparty_user_id": alice_id, "amount": 50.00, "settled_date": "2026-07-09"})
     assert r.status_code == 201
 
     balances = await client.get("/api/v1/shared-expenses/balances", headers=_auth(bob_token))
@@ -217,7 +217,7 @@ async def test_balances_with_zero_net_dont_clutter_the_list(client):
         f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
         json={"description": "A", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
     )
-    await client.post("/api/v1/shared-expenses/settlements", headers=_auth(alice_token), json={"to_user_id": bob_id, "amount": 0.01, "settled_date": "2026-07-09"})
+    await client.post("/api/v1/shared-expenses/settlements", headers=_auth(alice_token), json={"counterparty_user_id": bob_id, "amount": 0.01, "settled_date": "2026-07-09"})
     # (Not a clean zero on purpose -- just confirming the list still returns sensibly with mixed activity.)
     r = await client.get("/api/v1/shared-expenses/balances", headers=_auth(alice_token))
     assert r.status_code == 200
@@ -1299,7 +1299,7 @@ async def test_settlements_received_endpoint_shows_a_real_settlement(client):
     )
     await client.post(
         "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
-        json={"to_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
+        json={"counterparty_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
     )
 
     r = await client.get("/api/v1/shared-expenses/settlements/received", headers=_auth(bob_token))
@@ -1316,7 +1316,7 @@ async def test_settlements_received_excludes_settlements_the_caller_paid_out(cli
     bob_token, bob_id = await _signup(client, "bob-recv2@example.com", "Bob")
     await client.post(
         "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
-        json={"to_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
+        json={"counterparty_user_id": bob_id, "amount": 50.00, "settled_date": "2026-07-10"},
     )
 
     r = await client.get("/api/v1/shared-expenses/settlements/received", headers=_auth(alice_token))
@@ -1327,3 +1327,108 @@ async def test_settlements_received_excludes_settlements_the_caller_paid_out(cli
 async def test_settlements_received_requires_authentication(client):
     r = await client.get("/api/v1/shared-expenses/settlements/received")
     assert r.status_code == 401
+
+
+# ---------- Settling with a pending/frozen participant, both directions ----------
+
+
+async def test_settle_they_paid_me_with_a_pending_participant_succeeds(client):
+    alice_token, alice_id = await _signup(client, "alice-pendsettle1@example.com", "Alice")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Roomies", "members": []},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-08",
+            "participant_ids": [alice_id],
+            "pending_participants": [{"email": "bharath-r1@example.com", "name": "Bharath k"}],
+        },
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath-r1@example.com")
+
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_email_ref": ref, "direction": "they_paid_me", "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["from_user_id"] is None
+    assert body["from_name"] == "Bharath k"
+    assert body["to_user_id"] == alice_id
+
+
+async def test_settle_they_paid_me_with_a_real_user_is_rejected(client):
+    alice_token, alice_id = await _signup(client, "alice-pendsettle2@example.com", "Alice")
+    bob_token, bob_id = await _signup(client, "bob-pendsettle2@example.com", "Bob")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Roomies", "members": [{"email": "bob-pendsettle2@example.com", "name": ""}]},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={"description": "Dinner", "amount": 100.00, "expense_date": "2026-07-08", "participant_ids": [alice_id, bob_id]},
+    )
+    # Alice tries to record that Bob (a real, signed-up user) paid HER --
+    # must be rejected; Bob can and should confirm this himself.
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_user_id": bob_id, "direction": "they_paid_me", "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 400
+
+
+async def test_settle_with_neither_counterparty_field_is_rejected(client):
+    alice_token, _ = await _signup(client, "alice-pendsettle3@example.com", "Alice")
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"amount": 50.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 400
+
+
+async def test_settle_with_an_email_ref_with_no_shared_history_is_rejected(client):
+    alice_token, _ = await _signup(client, "alice-pendsettle4@example.com", "Alice")
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("total-stranger@example.com")
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_email_ref": ref, "direction": "they_paid_me", "amount": 50.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 404
+
+
+async def test_settle_i_paid_them_with_a_pending_participant_still_works(client):
+    alice_token, alice_id = await _signup(client, "alice-pendsettle5@example.com", "Alice")
+    group_resp = await client.post(
+        "/api/v1/shared-expenses/groups", headers=_auth(alice_token),
+        json={"name": "Roomies", "members": []},
+    )
+    group_id = group_resp.json()["id"]
+    await client.post(
+        f"/api/v1/shared-expenses/groups/{group_id}/expenses", headers=_auth(alice_token),
+        json={
+            "description": "Dinner", "amount": 100.00, "expense_date": "2026-07-08",
+            "participant_ids": [alice_id],
+            "pending_participants": [{"email": "bharath-r5@example.com", "name": "Bharath k"}],
+        },
+    )
+    from app.services.shared_expense_service import email_reference
+    ref = email_reference("bharath-r5@example.com")
+
+    # Default direction (i_paid_them) — Alice paying a pending person
+    # she fronted for is still a real, valid scenario (e.g. she owed
+    # THEM from a different expense).
+    r = await client.post(
+        "/api/v1/shared-expenses/settlements", headers=_auth(alice_token),
+        json={"counterparty_email_ref": ref, "amount": 10.00, "settled_date": "2026-07-10"},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["from_user_id"] == alice_id
+    assert body["to_user_id"] is None
+    assert body["to_name"] == "Bharath k"
