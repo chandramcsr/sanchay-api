@@ -16,6 +16,7 @@ from app.services.shared_expense_service import (
     compute_group_debt_simplification,
     create_group,
     create_shared_expense,
+    delete_shared_expense,
     edit_shared_expense,
     ensure_pending_invite,
     find_pending_or_frozen_name,
@@ -1001,3 +1002,50 @@ async def test_find_pending_or_frozen_name_scoped_to_a_group_rejects_a_different
 
     name_in_b = await find_pending_or_frozen_name(db_session, user_id=alice.id, email_ref=ref, group_id=group_b.id)
     assert name_in_b is None
+
+
+# ---------- Deleting an expense must fully zero out its contribution to the balance ----------
+#
+# Direct report: after deleting a $100/50-50-split expense, the
+# overview still showed $100 owed instead of returning to $0.
+# Verifies delete_shared_expense() genuinely and completely removes
+# an expense's effect on compute_balance(), not just from whatever
+# list happens to be displayed.
+
+
+async def test_deleting_an_expense_returns_the_balance_to_exactly_zero(db_session):
+    alice, bob = await _make_users(db_session, "-delbalance1")
+    group = await create_group(db_session, name="Roomies", created_by=alice.id, member_ids=[bob.id])
+    dinner = await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+
+    before = await compute_balance(db_session, user_a=bob.id, user_b=alice.id)
+    assert before == Decimal("50.00")  # Bob owes his $50 share
+
+    await delete_shared_expense(db_session, expense_id=dinner.id)
+
+    after = await compute_balance(db_session, user_a=bob.id, user_b=alice.id)
+    assert after == Decimal("0.00")  # fully zeroed, not still reflecting the deleted expense
+
+
+async def test_deleting_one_of_two_expenses_only_removes_that_one_expenses_contribution(db_session):
+    alice, bob = await _make_users(db_session, "-delbalance2")
+    group = await create_group(db_session, name="Roomies", created_by=alice.id, member_ids=[bob.id])
+    dinner = await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Dinner",
+        amount=Decimal("100.00"), expense_date="2026-07-08", participant_ids=[alice.id, bob.id],
+    )
+    await create_shared_expense(
+        db_session, group_id=group.id, paid_by=alice.id, description="Groceries",
+        amount=Decimal("40.00"), expense_date="2026-07-09", participant_ids=[alice.id, bob.id],
+    )
+
+    before = await compute_balance(db_session, user_a=bob.id, user_b=alice.id)
+    assert before == Decimal("70.00")  # 50 (dinner) + 20 (groceries)
+
+    await delete_shared_expense(db_session, expense_id=dinner.id)
+
+    after = await compute_balance(db_session, user_a=bob.id, user_b=alice.id)
+    assert after == Decimal("20.00")  # only the groceries share remains — not still 70, not 0
