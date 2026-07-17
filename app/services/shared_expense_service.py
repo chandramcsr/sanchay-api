@@ -315,7 +315,8 @@ async def accept_invite_link(db: AsyncSession, *, invite_id: str, user: User) ->
 
 
 async def create_group(db: AsyncSession, *, name: str, created_by: str, member_ids: list[str]) -> Group:
-    group = Group(name=name, created_by=created_by)
+    creator = await db.get(User, created_by)
+    group = Group(name=name, created_by=created_by, created_by_name_snapshot=creator.display_name if creator else "Unknown")
     db.add(group)
     await db.flush()  # need group.id before creating members
 
@@ -1012,6 +1013,11 @@ async def freeze_user_references(db: AsyncSession, *, user_id: str) -> None:
     """
     user = await db.get(User, user_id)
     name = user.display_name if user else "Unknown"
+
+    result = await db.execute(select(Group).where(Group.created_by == user_id))
+    for group in result.scalars().all():
+        group.created_by_name_snapshot = name
+        group.created_by = None
 
     for model, field in [
         (GroupMember, "user_id"),

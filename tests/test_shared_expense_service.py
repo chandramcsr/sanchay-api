@@ -291,6 +291,36 @@ async def test_delete_account_freezes_shared_expense_history_instead_of_destroyi
     assert await user_repository.get_by_id(db_session, bob.id) is None
 
 
+async def test_deleting_the_group_creators_account_succeeds_and_the_group_survives(db_session):
+    """
+    Reported directly, and reproduced exactly: deleting an account
+    that CREATED a group failed with a foreign key violation on
+    production (PostgreSQL, which always enforces FK constraints) --
+    groups.created_by was never nulled by freeze_user_references, and
+    was a non-nullable column besides, so the final DELETE FROM users
+    was rejected outright. This is the untested path the test above
+    doesn't cover -- that one deletes a MEMBER's account, never the
+    group's own creator, which is a structurally different foreign key
+    (GroupMember.user_id, already nullable and already frozen
+    correctly, vs. Group.created_by, which wasn't).
+    """
+    from app.services import auth_service
+
+    alice, bob = await _make_users(db_session, "8b")
+    group = await create_group(db_session, name="Roommates", created_by=alice.id, member_ids=[bob.id])
+
+    # This must not raise -- reproduces the exact IntegrityError from
+    # the report if the fix regresses.
+    await auth_service.delete_account(db_session, current_user=alice, password="hunter2222")
+
+    await db_session.refresh(group)
+    assert group.created_by is None
+    assert group.created_by_name_snapshot == "Alice"
+
+    from app.repositories import user_repository
+    assert await user_repository.get_by_id(db_session, alice.id) is None
+
+
 # ---------- email-based reconnection ----------
 
 async def test_signing_up_again_with_the_same_email_reconnects_frozen_history(db_session):

@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.feedback import Feedback
@@ -28,3 +29,22 @@ async def submit_feedback(
     await db.commit()
     await db.refresh(feedback)
     return feedback
+
+
+async def freeze_feedback_references(db: AsyncSession, *, user_id: str) -> None:
+    """
+    Called by auth_service.delete_account() BEFORE the user row is
+    deleted — same reasoning and same bug class as
+    shared_expense_service.freeze_user_references(), caught here
+    proactively rather than waiting for a second report: user_id is
+    nullable on Feedback (by design, per the model's own docstring --
+    feedback is still worth having after someone deletes their
+    account), but nothing actually nulled it before this fix, so the
+    foreign key still blocked account deletion for anyone who'd ever
+    submitted feedback. email_snapshot already preserves who said it,
+    so there's no separate name-snapshot step needed here.
+    """
+    result = await db.execute(select(Feedback).where(Feedback.user_id == user_id))
+    for row in result.scalars().all():
+        row.user_id = None
+    await db.commit()

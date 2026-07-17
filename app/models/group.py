@@ -24,11 +24,19 @@ class Group(Base):
     ever became its own service, moving it would mean copying these
     tables and their code, nothing else in sanchay-api would need to
     change.
+
+    created_by is nullable — same freeze-not-cascade reasoning as
+    GroupMember/SharedExpenseSplit/Settlement/etc: if the creator
+    deletes their account, the group itself (and everyone still in it)
+    has to survive, not get deleted or blocked from being deleted.
+    created_by_name_snapshot preserves who created it once created_by
+    is nulled, the same pattern used throughout this module.
     """
 
     __tablename__ = "groups"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_by_name_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)

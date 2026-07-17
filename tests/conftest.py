@@ -5,6 +5,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-not-for-production-use"
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +22,22 @@ engine = create_async_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+# SQLite does NOT enforce foreign key constraints by default -- unlike
+# PostgreSQL (production), which always does. Without this, a real bug
+# (deleting an account that still owned a group violated
+# groups.created_by's FK on production, but every local/CI test
+# passed silently, since SQLite never checked it at all) can slip
+# through the entire test suite undetected. Every connection gets this
+# turned on, matching production's actual behavior.
+@event.listens_for(engine.sync_engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 TestingSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 
