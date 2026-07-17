@@ -14,7 +14,7 @@ from app.core.error_handlers import unhandled_exception_handler, validation_exce
 from app.core.limiter import limiter
 from app.core.logging import configure_logging
 from app.models import user  # noqa: F401 — registers the model with Base.metadata
-from app.routers import auth, shared_expenses, sync
+from app.routers import auth, feedback, shared_expenses, sync
 
 configure_logging()
 
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="1.28.0",
+    version="1.29.0",
     lifespan=lifespan,
 )
 
@@ -67,6 +67,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix=API_V1_PREFIX)
 app.include_router(sync.router, prefix=API_V1_PREFIX)
 app.include_router(shared_expenses.router, prefix=API_V1_PREFIX)
+app.include_router(feedback.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")

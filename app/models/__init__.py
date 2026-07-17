@@ -1,5 +1,6 @@
 from app.models.email_verification_token import EmailVerificationToken
 from app.models.encrypted_ledger import EncryptedLedger
+from app.models.feedback import Feedback
 from app.models.group import Group
 from app.models.group_member import GroupMember
 from app.models.login_event import LoginEvent
@@ -28,4 +29,5 @@ __all__ = [
     "Settlement",
     "PendingGroupInvite",
     "SharedRecurringRule",
+    "Feedback",
 ]
