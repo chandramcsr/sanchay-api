@@ -144,3 +144,81 @@ async def test_deleting_an_account_with_health_data_succeeds_and_removes_it(db_s
     assert await user_repository.get_by_id(db_session, alice.id) is None
     assert await health_service.get_profile(db_session, user_id=alice.id) is None
     assert await health_service.list_weight_entries(db_session, user_id=alice.id) == []
+
+
+async def test_add_and_list_blood_pressure_entries_most_recent_first(db_session):
+    alice = await _make_user(db_session, "12")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=70, recorded_date="2026-07-01")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=118, diastolic=78, pulse=68, recorded_date="2026-07-10")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=122, diastolic=82, pulse=72, recorded_date="2026-07-05")
+
+    entries = await health_service.list_blood_pressure_entries(db_session, user_id=alice.id)
+    assert [e.recorded_date for e in entries] == ["2026-07-10", "2026-07-05", "2026-07-01"]
+
+
+async def test_blood_pressure_entry_pulse_is_optional(db_session):
+    alice = await _make_user(db_session, "13")
+    entry = await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=None, recorded_date="2026-07-01")
+    assert entry.pulse is None
+    assert entry.systolic == 120
+    assert entry.diastolic == 80
+
+
+async def test_blood_pressure_entries_are_scoped_per_user(db_session):
+    alice = await _make_user(db_session, "14")
+    bob = await _make_user(db_session, "14b")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=70, recorded_date="2026-07-01")
+    await health_service.add_blood_pressure_entry(db_session, user_id=bob.id, systolic=130, diastolic=85, pulse=75, recorded_date="2026-07-01")
+
+    alice_entries = await health_service.list_blood_pressure_entries(db_session, user_id=alice.id)
+    assert len(alice_entries) == 1
+    assert alice_entries[0].systolic == 120
+
+
+async def test_delete_blood_pressure_entry_removes_it_and_returns_true(db_session):
+    alice = await _make_user(db_session, "15")
+    entry = await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=70, recorded_date="2026-07-01")
+
+    found = await health_service.delete_blood_pressure_entry(db_session, user_id=alice.id, entry_id=entry.id)
+    assert found is True
+    assert await health_service.list_blood_pressure_entries(db_session, user_id=alice.id) == []
+
+
+async def test_delete_blood_pressure_entry_returns_false_for_someone_elses_entry(db_session):
+    alice = await _make_user(db_session, "16")
+    bob = await _make_user(db_session, "16b")
+    entry = await health_service.add_blood_pressure_entry(db_session, user_id=bob.id, systolic=130, diastolic=85, pulse=None, recorded_date="2026-07-01")
+
+    found = await health_service.delete_blood_pressure_entry(db_session, user_id=alice.id, entry_id=entry.id)
+    assert found is False
+    assert len(await health_service.list_blood_pressure_entries(db_session, user_id=bob.id)) == 1
+
+
+async def test_delete_health_references_also_removes_blood_pressure_entries(db_session):
+    alice = await _make_user(db_session, "17")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=70, recorded_date="2026-07-01")
+
+    await health_service.delete_health_references(db_session, user_id=alice.id)
+
+    assert await health_service.list_blood_pressure_entries(db_session, user_id=alice.id) == []
+
+
+async def test_deleting_an_account_with_blood_pressure_data_succeeds_and_removes_it(db_session):
+    """
+    Same bug class already found and fixed twice this session before
+    this table even existed (Group.created_by, Feedback.user_id) --
+    blood_pressure_entries.user_id is ALSO not nullable, so this is
+    verified directly again here rather than assuming
+    delete_health_references()'s existing coverage of weight/profile
+    automatically extends to a table added after it was written.
+    """
+    from app.services import auth_service
+    from app.repositories import user_repository
+
+    alice = await _make_user(db_session, "18")
+    await health_service.add_blood_pressure_entry(db_session, user_id=alice.id, systolic=120, diastolic=80, pulse=70, recorded_date="2026-07-01")
+
+    await auth_service.delete_account(db_session, current_user=alice, password="hunter2222")
+
+    assert await user_repository.get_by_id(db_session, alice.id) is None
+    assert await health_service.list_blood_pressure_entries(db_session, user_id=alice.id) == []

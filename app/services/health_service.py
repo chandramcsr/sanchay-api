@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.blood_pressure_entry import BloodPressureEntry
 from app.models.health_profile import HealthProfile
 from app.models.weight_entry import WeightEntry
 
@@ -66,23 +67,58 @@ async def delete_weight_entry(db: AsyncSession, *, user_id: str, entry_id: str) 
     return True
 
 
+async def add_blood_pressure_entry(
+    db: AsyncSession, *, user_id: str, systolic: int, diastolic: int, pulse: int | None, recorded_date: str
+) -> BloodPressureEntry:
+    entry = BloodPressureEntry(user_id=user_id, systolic=systolic, diastolic=diastolic, pulse=pulse, recorded_date=recorded_date)
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return entry
+
+
+async def list_blood_pressure_entries(db: AsyncSession, *, user_id: str) -> list[BloodPressureEntry]:
+    result = await db.execute(
+        select(BloodPressureEntry).where(BloodPressureEntry.user_id == user_id).order_by(BloodPressureEntry.recorded_date.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def delete_blood_pressure_entry(db: AsyncSession, *, user_id: str, entry_id: str) -> bool:
+    """Same "not found, not 403" reasoning as delete_weight_entry above."""
+    result = await db.execute(select(BloodPressureEntry).where(BloodPressureEntry.id == entry_id, BloodPressureEntry.user_id == user_id))
+    entry = result.scalar_one_or_none()
+    if entry is None:
+        return False
+    await db.delete(entry)
+    await db.commit()
+    return True
+
+
 async def delete_health_references(db: AsyncSession, *, user_id: str) -> None:
     """
     Called by auth_service.delete_account() BEFORE the user row is
     deleted — explicit deletion, not freezing (see HealthProfile's
     docstring for why this domain's deletion policy is deliberately
-    the opposite of shared-expenses'). Both health_profiles.user_id
-    and weight_entries.user_id are NOT nullable, so without this call
-    the final DELETE FROM users would hit the exact foreign-key
-    violation already found and fixed for groups.created_by and
-    Feedback.user_id — same bug class, caught proactively here rather
-    than shipping a third instance of it.
+    the opposite of shared-expenses'). Every health table's user_id is
+    NOT nullable, so without this call the final DELETE FROM users
+    would hit the exact foreign-key violation already found and fixed
+    for groups.created_by and Feedback.user_id — same bug class,
+    caught proactively here rather than shipping another instance of
+    it, and re-verified (not just assumed to still hold) every time a
+    new health table is added — see the new test covering blood
+    pressure specifically in test_health_service.py, not just relying
+    on the existing weight/profile one still passing.
     """
     result = await db.execute(select(HealthProfile).where(HealthProfile.user_id == user_id))
     for row in result.scalars().all():
         await db.delete(row)
 
     result = await db.execute(select(WeightEntry).where(WeightEntry.user_id == user_id))
+    for row in result.scalars().all():
+        await db.delete(row)
+
+    result = await db.execute(select(BloodPressureEntry).where(BloodPressureEntry.user_id == user_id))
     for row in result.scalars().all():
         await db.delete(row)
 

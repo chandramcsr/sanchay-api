@@ -1,3 +1,4 @@
+from app.models.blood_pressure_entry import BloodPressureEntry
 from app.models.email_verification_token import EmailVerificationToken
 from app.models.encrypted_ledger import EncryptedLedger
 from app.models.feedback import Feedback
@@ -34,4 +35,5 @@ __all__ = [
     "Feedback",
     "HealthProfile",
     "WeightEntry",
+    "BloodPressureEntry",
 ]

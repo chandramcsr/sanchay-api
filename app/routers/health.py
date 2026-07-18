@@ -6,6 +6,8 @@ from app.core.deps import get_current_user
 from app.core.limiter import limiter
 from app.models.user import User
 from app.schemas.health import (
+    BloodPressureEntryCreateRequest,
+    BloodPressureEntryOut,
     HealthProfileOut,
     HealthProfileUpsertRequest,
     WeightEntryCreateRequest,
@@ -90,5 +92,48 @@ async def delete_weight_entry(
     request: Request, entry_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     found = await health_service.delete_weight_entry(db, user_id=current_user.id, entry_id=entry_id)
+    if not found:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Entry not found")
+
+
+@router.post("/blood-pressure", response_model=BloodPressureEntryOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute")
+async def add_blood_pressure_entry(
+    request: Request,
+    payload: BloodPressureEntryCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BloodPressureEntryOut:
+    entry = await health_service.add_blood_pressure_entry(
+        db, user_id=current_user.id, systolic=payload.systolic, diastolic=payload.diastolic,
+        pulse=payload.pulse, recorded_date=payload.recorded_date,
+    )
+    return BloodPressureEntryOut(
+        id=entry.id, systolic=entry.systolic, diastolic=entry.diastolic, pulse=entry.pulse,
+        recorded_date=entry.recorded_date, created_at=entry.created_at.isoformat(),
+    )
+
+
+@router.get("/blood-pressure", response_model=list[BloodPressureEntryOut])
+@limiter.limit("60/minute")
+async def list_blood_pressure_entries(
+    request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> list[BloodPressureEntryOut]:
+    entries = await health_service.list_blood_pressure_entries(db, user_id=current_user.id)
+    return [
+        BloodPressureEntryOut(
+            id=e.id, systolic=e.systolic, diastolic=e.diastolic, pulse=e.pulse,
+            recorded_date=e.recorded_date, created_at=e.created_at.isoformat(),
+        )
+        for e in entries
+    ]
+
+
+@router.delete("/blood-pressure/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("60/minute")
+async def delete_blood_pressure_entry(
+    request: Request, entry_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    found = await health_service.delete_blood_pressure_entry(db, user_id=current_user.id, entry_id=entry_id)
     if not found:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Entry not found")

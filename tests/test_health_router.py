@@ -100,3 +100,61 @@ async def test_delete_weight_entry_404s_for_a_nonexistent_id(client):
     token, _ = await _signup(client, "alice-hr9@example.com", "Alice")
     r = await client.delete("/api/v1/health/weight/does-not-exist", headers=_auth(token))
     assert r.status_code == 404
+
+
+async def test_add_and_list_blood_pressure_entries(client):
+    token, _ = await _signup(client, "alice-hr10@example.com", "Alice")
+    r = await client.post("/api/v1/health/blood-pressure", headers=_auth(token), json={"systolic": 120, "diastolic": 80, "pulse": 70, "recorded_date": "2026-07-01"})
+    assert r.status_code == 201
+    entry_id = r.json()["id"]
+    assert r.json()["systolic"] == 120
+    assert r.json()["pulse"] == 70
+
+    r2 = await client.get("/api/v1/health/blood-pressure", headers=_auth(token))
+    assert r2.status_code == 200
+    assert len(r2.json()) == 1
+    assert r2.json()[0]["id"] == entry_id
+
+
+async def test_add_blood_pressure_entry_without_pulse(client):
+    token, _ = await _signup(client, "alice-hr11@example.com", "Alice")
+    r = await client.post("/api/v1/health/blood-pressure", headers=_auth(token), json={"systolic": 120, "diastolic": 80, "recorded_date": "2026-07-01"})
+    assert r.status_code == 201
+    assert r.json()["pulse"] is None
+
+
+async def test_blood_pressure_rejects_an_obviously_wrong_systolic(client):
+    token, _ = await _signup(client, "alice-hr12@example.com", "Alice")
+    r = await client.post("/api/v1/health/blood-pressure", headers=_auth(token), json={"systolic": 9999, "diastolic": 80, "recorded_date": "2026-07-01"})
+    assert r.status_code == 422
+
+
+async def test_blood_pressure_entries_are_isolated_between_users(client):
+    alice_token, _ = await _signup(client, "alice-hr13@example.com", "Alice")
+    bob_token, _ = await _signup(client, "bob-hr13@example.com", "Bob")
+    await client.post("/api/v1/health/blood-pressure", headers=_auth(alice_token), json={"systolic": 120, "diastolic": 80, "recorded_date": "2026-07-01"})
+
+    r = await client.get("/api/v1/health/blood-pressure", headers=_auth(bob_token))
+    assert r.json() == []
+
+
+async def test_delete_blood_pressure_entry_succeeds_for_the_owner(client):
+    token, _ = await _signup(client, "alice-hr14@example.com", "Alice")
+    r = await client.post("/api/v1/health/blood-pressure", headers=_auth(token), json={"systolic": 120, "diastolic": 80, "recorded_date": "2026-07-01"})
+    entry_id = r.json()["id"]
+
+    r2 = await client.delete(f"/api/v1/health/blood-pressure/{entry_id}", headers=_auth(token))
+    assert r2.status_code == 204
+
+    r3 = await client.get("/api/v1/health/blood-pressure", headers=_auth(token))
+    assert r3.json() == []
+
+
+async def test_delete_blood_pressure_entry_404s_for_someone_elses_entry(client):
+    alice_token, _ = await _signup(client, "alice-hr15@example.com", "Alice")
+    bob_token, _ = await _signup(client, "bob-hr15@example.com", "Bob")
+    r = await client.post("/api/v1/health/blood-pressure", headers=_auth(bob_token), json={"systolic": 130, "diastolic": 85, "recorded_date": "2026-07-01"})
+    bob_entry_id = r.json()["id"]
+
+    r2 = await client.delete(f"/api/v1/health/blood-pressure/{bob_entry_id}", headers=_auth(alice_token))
+    assert r2.status_code == 404
