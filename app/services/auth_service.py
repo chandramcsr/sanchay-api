@@ -38,6 +38,7 @@ from app.repositories import (
 )
 from app.repositories import encrypted_ledger_repository
 from app.services.feedback_service import freeze_feedback_references
+from app.services.health_service import delete_health_references
 from app.services.shared_expense_service import freeze_user_references, join_pending_invites, reconnect_by_email
 
 
@@ -265,12 +266,21 @@ async def delete_account(db: AsyncSession, *, current_user: User, password: str)
     genuinely gone. Both called BEFORE the user row is deleted, since
     freeze_user_references' snapshot needs the still-live display_name
     to copy from.
+
+    Health data is the opposite case, deliberately -- see
+    HealthProfile's docstring for why: nobody else has a legitimate
+    claim on someone's height or weight history the way a shared
+    expense's other participant does on a mutual debt, so
+    delete_health_references() genuinely deletes it, the same
+    explicit-deletion pattern already used for login_events and
+    refresh_tokens below, not a freeze.
     """
     if not await verify_password_async(password, current_user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect password")
 
     await freeze_user_references(db, user_id=current_user.id)
     await freeze_feedback_references(db, user_id=current_user.id)
+    await delete_health_references(db, user_id=current_user.id)
 
     await encrypted_ledger_repository.delete_by_user_id(db, current_user.id)
     await password_reset_repository.delete_by_user_id(db, current_user.id)
