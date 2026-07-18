@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .env
+.env.*
+!.env.prod.example
 *.db
 .pytest_cache/
 .venv/

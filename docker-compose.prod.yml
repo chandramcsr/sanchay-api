@@ -1,0 +1,32 @@
+# Production deployment (Oracle Cloud or any other VM) — see
+# DEPLOY.md's "Oracle Cloud" section for the full walkthrough.
+#
+# Unlike docker-compose.yml (local dev), this does NOT run a database
+# container — DATABASE_URL in .env.prod points at Neon (or wherever
+# your Postgres actually lives). Caddy terminates HTTPS and proxies
+# to the API; the API itself is never exposed directly to the
+# internet, only reachable from Caddy inside this compose network.
+services:
+  api:
+    build: .
+    env_file: .env.prod
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:

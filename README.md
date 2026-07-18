@@ -260,12 +260,16 @@ alembic upgrade head
 
 ## Deploying
 
-Any host that runs a Docker container and gives you a managed Postgres
-works: Render, Railway, Fly.io, or a Postgres add-on wherever you land.
-None of the code changes — set `DATABASE_URL`, `JWT_SECRET_KEY`, and
-`CORS_ORIGINS` (to your real frontend origin, not `*`) as environment
-variables on the host, and `alembic upgrade head` runs automatically on
-container start via `CMD` in the Dockerfile.
+Any host that runs a Docker container works, whether it also manages
+Postgres for you (Render, Railway, Fly.io) or not (a bare VM — Oracle
+Cloud's Always Free ARM tier is genuinely free indefinitely, paired
+with Neon or Supabase for the database; see `DEPLOY.md` for the full
+walkthrough of that path, including automatic HTTPS via Caddy with no
+domain required). None of the code changes either way — set
+`DATABASE_URL`, `JWT_SECRET_KEY`, and `CORS_ORIGINS` (to your real
+frontend origin, not `*`) as environment variables on the host, and
+`alembic upgrade head` runs automatically on container start via
+`CMD` in the Dockerfile.
 
 ## What's deliberately not here yet
 

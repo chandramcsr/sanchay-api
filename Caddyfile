@@ -1,0 +1,10 @@
+# Reverse proxy + automatic HTTPS for the API, via Let's Encrypt.
+#
+# Replace the placeholder below with your instance's actual hostname
+# once you have a public IP — see DEPLOY.md's "Oracle Cloud" section
+# for exactly how to get one without owning a domain yet (sslip.io).
+# Caddy re-issues and renews the certificate automatically; nothing
+# else to configure.
+your-instance-ip.sslip.io {
+	reverse_proxy api:8000
+}
