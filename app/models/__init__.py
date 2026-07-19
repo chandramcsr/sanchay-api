@@ -5,6 +5,7 @@ from app.models.feedback import Feedback
 from app.models.group import Group
 from app.models.group_member import GroupMember
 from app.models.health_profile import HealthProfile
+from app.models.legal_record import LegalRecord
 from app.models.login_event import LoginEvent
 from app.models.password_reset_token import PasswordResetToken
 from app.models.pending_group_invite import PendingGroupInvite
@@ -36,4 +37,5 @@ __all__ = [
     "HealthProfile",
     "WeightEntry",
     "BloodPressureEntry",
+    "LegalRecord",
 ]

@@ -39,6 +39,7 @@ from app.repositories import (
 from app.repositories import encrypted_ledger_repository
 from app.services.feedback_service import freeze_feedback_references
 from app.services.health_service import delete_health_references
+from app.services.legal_service import delete_legal_records
 from app.services.shared_expense_service import freeze_user_references, join_pending_invites, reconnect_by_email
 
 
@@ -281,6 +282,7 @@ async def delete_account(db: AsyncSession, *, current_user: User, password: str)
     await freeze_user_references(db, user_id=current_user.id)
     await freeze_feedback_references(db, user_id=current_user.id)
     await delete_health_references(db, user_id=current_user.id)
+    await delete_legal_records(db, user_id=current_user.id)
 
     await encrypted_ledger_repository.delete_by_user_id(db, current_user.id)
     await password_reset_repository.delete_by_user_id(db, current_user.id)
