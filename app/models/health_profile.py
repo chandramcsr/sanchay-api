@@ -18,8 +18,8 @@ def _now() -> datetime:
 class HealthProfile(Base):
     """
     One row per user — baseline health info that changes rarely
-    (height, date of birth, biological sex) plus a free-text notes
-    field for anything else worth having on hand (allergies, existing
+    (height, age, biological sex) plus a free-text notes field for
+    anything else worth having on hand (allergies, existing
     conditions) until there's a real reason to make that structured.
 
     Deliberately its own module, matching this codebase's established
@@ -36,7 +36,7 @@ class HealthProfile(Base):
     expenses freeze (null the reference, keep the row) because another
     person has a legitimate reason to still see "who owed what" after
     someone deletes their account. Nobody has an equivalent claim on
-    someone's height or date of birth -- there's no multi-party reason
+    someone's height or age -- there's no multi-party reason
     to retain it. So health data is fully, explicitly deleted when the
     account is (see auth_service.delete_account and
     health_service.delete_health_references), the same explicit-
@@ -49,7 +49,7 @@ class HealthProfile(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True, index=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
-    date_of_birth: Mapped[str | None] = mapped_column(String(10), nullable=True)  # YYYY-MM-DD
+    age: Mapped[int | None] = mapped_column(nullable=True)
     biological_sex: Mapped[str | None] = mapped_column(String(20), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
