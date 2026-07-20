@@ -8,6 +8,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
+import sentry_sdk
+
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.error_handlers import unhandled_exception_handler, validation_exception_handler
@@ -17,6 +19,23 @@ from app.models import user  # noqa: F401 — registers the model with Base.meta
 from app.routers import auth, feedback, health, legal, shared_expenses, sync
 
 configure_logging()
+
+APP_VERSION = "1.37.0"
+
+# dsn=None is a documented no-op in the SDK, not a crash -- so this is
+# safe to call unconditionally even in local dev/tests where
+# SENTRY_DSN is never set, same as every other optional integration in
+# this app. traces_sample_rate=1.0 (capture every transaction, not a
+# sample) is deliberate at this traffic level -- sampling matters once
+# volume could threaten a paid tier's usage cap, which isn't a real
+# concern yet.
+sentry_sdk.init(
+    dsn=settings.sentry_dsn,
+    environment=settings.sentry_environment,
+    release=f"sanchay-api@{APP_VERSION}",
+    traces_sample_rate=1.0,
+    send_default_pii=False,  # no request bodies/headers/user IP by default -- this API handles auth credentials and financial-adjacent data
+)
 
 
 @asynccontextmanager
@@ -35,7 +54,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Sanchay API",
     description="Identity and auth service for Sanchay. Does not store financial data.",
-    version="1.36.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 

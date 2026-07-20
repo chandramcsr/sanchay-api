@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     frontend_url: str = "https://chandramcsr.github.io/ledger-app/"
     password_reset_token_expire_minutes: int = 30
 
+    # Error tracking (Sentry). Optional on purpose, same pattern as
+    # resend_api_key above: sentry_sdk.init() with dsn=None is a
+    # documented no-op, not a crash, so local dev and tests work with
+    # zero config. environment defaults to "development" rather than
+    # something that could be mistaken for a real deployment if this
+    # is ever left unset somewhere it shouldn't be.
+    sentry_dsn: str | None = None
+    sentry_environment: str = "development"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

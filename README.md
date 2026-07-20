@@ -271,6 +271,21 @@ frontend origin, not `*`) as environment variables on the host, and
 `alembic upgrade head` runs automatically on container start via
 `CMD` in the Dockerfile.
 
+## Error tracking
+
+Optional. Set `SENTRY_DSN` (and `SENTRY_ENVIRONMENT`, e.g.
+`production`) to send unhandled exceptions to a Sentry project —
+unset by default, and genuinely inert with no DSN configured (no
+transport gets created, so `capture_exception` calls have nowhere to
+send anything; this is verified directly in
+`tests/test_sentry_config.py`, not just assumed from the SDK's docs).
+Works correctly alongside this app's own custom `Exception` handler
+in `app/core/error_handlers.py` — Sentry still captures the exception
+even though that handler returns a normal JSON response instead of
+letting it propagate further, confirmed empirically before shipping
+this, not assumed from how the integration is documented to behave in
+a default FastAPI app.
+
 ## What's deliberately not here yet
 
 Everything below was accurate as "not built" at some earlier point and
