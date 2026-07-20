@@ -15,7 +15,7 @@ async def get_profile(db: AsyncSession, *, user_id: str) -> HealthProfile | None
 
 async def upsert_profile(
     db: AsyncSession, *, user_id: str,
-    height_cm: float | None, age: int | None, gender: str | None, notes: str | None,
+    height_cm: float | None, age: int | None, gender: str | None,
 ) -> HealthProfile:
     """
     Create-or-update, one row per user — matches the request shape
@@ -30,11 +30,9 @@ async def upsert_profile(
         profile = HealthProfile(user_id=user_id)
         db.add(profile)
 
-    stripped_notes = notes.strip() if notes else ""
     profile.height_cm = height_cm
     profile.age = age
     profile.gender = gender
-    profile.notes = stripped_notes or None
 
     await db.commit()
     await db.refresh(profile)

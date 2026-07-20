@@ -5,14 +5,12 @@ class HealthProfileUpsertRequest(BaseModel):
     height_cm: float | None = Field(default=None, gt=0)
     age: int | None = Field(default=None, gt=0, lt=130)
     gender: str | None = None  # "male" | "female" | "other" | "prefer_not_to_say"
-    notes: str | None = Field(default=None, max_length=5000)
 
 
 class HealthProfileOut(BaseModel):
     height_cm: float | None
     age: int | None
     gender: str | None
-    notes: str | None
     updated_at: str
 
 

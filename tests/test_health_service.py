@@ -20,27 +20,25 @@ async def test_upsert_profile_creates_on_first_call(db_session):
     alice = await _make_user(db_session, "2")
     profile = await health_service.upsert_profile(
         db_session, user_id=alice.id, height_cm=170.0, age=35,
-        gender="female", notes="No known allergies",
+        gender="female",
     )
     assert profile.height_cm == 170.0
     assert profile.age == 35
     assert profile.gender == "female"
-    assert profile.notes == "No known allergies"
 
 
 async def test_upsert_profile_updates_the_same_row_on_a_second_call(db_session):
     alice = await _make_user(db_session, "3")
     await health_service.upsert_profile(
         db_session, user_id=alice.id, height_cm=170.0, age=35,
-        gender="female", notes=None,
+        gender="female",
     )
     await health_service.upsert_profile(
         db_session, user_id=alice.id, height_cm=171.0, age=35,
-        gender="female", notes="Updated",
+        gender="female",
     )
     profile = await health_service.get_profile(db_session, user_id=alice.id)
     assert profile.height_cm == 171.0
-    assert profile.notes == "Updated"
 
     # Exactly one row -- an upsert, not an accumulating history.
     from sqlalchemy import select
@@ -54,19 +52,11 @@ async def test_upsert_profile_rejects_an_invalid_gender(db_session):
     try:
         await health_service.upsert_profile(
             db_session, user_id=alice.id, height_cm=170.0, age=None,
-            gender="not-a-real-option", notes=None,
+            gender="not-a-real-option",
         )
         assert False, "expected ValueError"
     except ValueError:
         pass
-
-
-async def test_upsert_profile_strips_notes_whitespace_and_treats_blank_as_none(db_session):
-    alice = await _make_user(db_session, "5")
-    profile = await health_service.upsert_profile(
-        db_session, user_id=alice.id, height_cm=None, age=None, gender=None, notes="   ",
-    )
-    assert profile.notes is None
 
 
 async def test_add_and_list_weight_entries_most_recent_first(db_session):
@@ -113,7 +103,7 @@ async def test_delete_weight_entry_returns_false_for_someone_elses_entry(db_sess
 
 async def test_delete_health_references_removes_both_profile_and_weight_entries(db_session):
     alice = await _make_user(db_session, "10")
-    await health_service.upsert_profile(db_session, user_id=alice.id, height_cm=170.0, age=None, gender=None, notes=None)
+    await health_service.upsert_profile(db_session, user_id=alice.id, height_cm=170.0, age=None, gender=None)
     await health_service.add_weight_entry(db_session, user_id=alice.id, weight_kg=70.0, recorded_date="2026-07-01")
     await health_service.add_weight_entry(db_session, user_id=alice.id, weight_kg=69.5, recorded_date="2026-07-10")
 
@@ -136,7 +126,7 @@ async def test_deleting_an_account_with_health_data_succeeds_and_removes_it(db_s
     from app.repositories import user_repository
 
     alice = await _make_user(db_session, "11")
-    await health_service.upsert_profile(db_session, user_id=alice.id, height_cm=170.0, age=35, gender="female", notes=None)
+    await health_service.upsert_profile(db_session, user_id=alice.id, height_cm=170.0, age=35, gender="female")
     await health_service.add_weight_entry(db_session, user_id=alice.id, weight_kg=70.0, recorded_date="2026-07-01")
 
     await auth_service.delete_account(db_session, current_user=alice, password="hunter2222")

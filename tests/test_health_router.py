@@ -19,14 +19,13 @@ async def test_put_profile_creates_then_get_returns_it(client):
     token, _ = await _signup(client, "alice-hr2@example.com", "Alice")
     r = await client.put(
         "/api/v1/health/profile", headers=_auth(token),
-        json={"height_cm": 170.0, "age": 35, "gender": "female", "notes": "No known allergies"},
+        json={"height_cm": 170.0, "age": 35, "gender": "female"},
     )
     assert r.status_code == 200
     assert r.json()["height_cm"] == 170.0
 
     r2 = await client.get("/api/v1/health/profile", headers=_auth(token))
     assert r2.json()["height_cm"] == 170.0
-    assert r2.json()["notes"] == "No known allergies"
 
 
 async def test_put_profile_rejects_an_invalid_gender(client):

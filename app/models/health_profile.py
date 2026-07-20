@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -17,10 +17,8 @@ def _now() -> datetime:
 
 class HealthProfile(Base):
     """
-    One row per user — baseline health info that changes rarely
-    (height, age, gender) plus a free-text notes field for
-    anything else worth having on hand (allergies, existing
-    conditions) until there's a real reason to make that structured.
+    One row per user — baseline health info that changes rarely:
+    height, age, gender.
 
     Deliberately its own module, matching this codebase's established
     discipline for shared_expense_service: the ONLY foreign key out of
@@ -51,6 +49,5 @@ class HealthProfile(Base):
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     age: Mapped[int | None] = mapped_column(nullable=True)
     gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
