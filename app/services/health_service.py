@@ -5,7 +5,7 @@ from app.models.blood_pressure_entry import BloodPressureEntry
 from app.models.health_profile import HealthProfile
 from app.models.weight_entry import WeightEntry
 
-VALID_SEXES = {"male", "female", "other", "prefer_not_to_say"}
+VALID_GENDERS = {"male", "female", "other", "prefer_not_to_say"}
 
 
 async def get_profile(db: AsyncSession, *, user_id: str) -> HealthProfile | None:
@@ -15,15 +15,15 @@ async def get_profile(db: AsyncSession, *, user_id: str) -> HealthProfile | None
 
 async def upsert_profile(
     db: AsyncSession, *, user_id: str,
-    height_cm: float | None, age: int | None, biological_sex: str | None, notes: str | None,
+    height_cm: float | None, age: int | None, gender: str | None, notes: str | None,
 ) -> HealthProfile:
     """
     Create-or-update, one row per user — matches the request shape
     (PUT, not POST), which is idempotent by design: submitting the
     same profile twice has the same effect as submitting it once.
     """
-    if biological_sex is not None and biological_sex not in VALID_SEXES:
-        raise ValueError(f"biological_sex must be one of {sorted(VALID_SEXES)}")
+    if gender is not None and gender not in VALID_GENDERS:
+        raise ValueError(f"gender must be one of {sorted(VALID_GENDERS)}")
 
     profile = await get_profile(db, user_id=user_id)
     if profile is None:
@@ -33,7 +33,7 @@ async def upsert_profile(
     stripped_notes = notes.strip() if notes else ""
     profile.height_cm = height_cm
     profile.age = age
-    profile.biological_sex = biological_sex
+    profile.gender = gender
     profile.notes = stripped_notes or None
 
     await db.commit()

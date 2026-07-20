@@ -18,7 +18,7 @@ def _now() -> datetime:
 class HealthProfile(Base):
     """
     One row per user — baseline health info that changes rarely
-    (height, age, biological sex) plus a free-text notes field for
+    (height, age, gender) plus a free-text notes field for
     anything else worth having on hand (allergies, existing
     conditions) until there's a real reason to make that structured.
 
@@ -50,7 +50,7 @@ class HealthProfile(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, unique=True, index=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     age: Mapped[int | None] = mapped_column(nullable=True)
-    biological_sex: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(20), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)

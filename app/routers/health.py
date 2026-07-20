@@ -29,7 +29,7 @@ async def get_profile(
     return HealthProfileOut(
         height_cm=profile.height_cm,
         age=profile.age,
-        biological_sex=profile.biological_sex,
+        gender=profile.gender,
         notes=profile.notes,
         updated_at=profile.updated_at.isoformat(),
     )
@@ -47,14 +47,14 @@ async def upsert_profile(
         profile = await health_service.upsert_profile(
             db, user_id=current_user.id,
             height_cm=payload.height_cm, age=payload.age,
-            biological_sex=payload.biological_sex, notes=payload.notes,
+            gender=payload.gender, notes=payload.notes,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(e))
     return HealthProfileOut(
         height_cm=profile.height_cm,
         age=profile.age,
-        biological_sex=profile.biological_sex,
+        gender=profile.gender,
         notes=profile.notes,
         updated_at=profile.updated_at.isoformat(),
     )
