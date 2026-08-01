@@ -221,18 +221,22 @@ Token is your Datadog **organization-level** API key (not an
 application key — Datadog rejects those here). No code change; this
 forwards `sanchay-api`'s existing stdout logs as-is.
 
-**2. Backend APM (request tracing).** `ddtrace` is already wired into
-the Dockerfile (`ddtrace-run uvicorn ...`) — it's a safe no-op until
-it can reach an agent. To actually collect traces:
-  - Deploy Render's official Datadog Agent template
-    (github.com/render-examples/datadog-agent) as its own private
-    service in the same Render account, with `DD_API_KEY` set on
-    *that* service.
-  - On `sanchay-api`'s own Render service, set `DD_AGENT_HOST` to the
-    agent's private-service hostname, plus `DD_TRACE_AGENT_PORT=8126`,
-    `DD_SERVICE=sanchay-api`, `DD_ENV=production` (see `.env.example`
-    for the full list). Render's private networking lets one service
-    reach another by hostname without exposing anything publicly.
+**2. Backend APM (request tracing).** `trace-agent` (not the full
+Datadog Agent — just the trace-collection piece) runs as a second
+process inside `sanchay-api`'s own container, started by `start.sh`
+alongside `uvicorn`. Deliberately not a separate Render Private
+Service — those don't have a free instance type, so a second service
+just for trace collection is real ongoing cost for a solo-user app.
+To turn it on:
+  - Set `DD_API_KEY` on `sanchay-api`'s Render service (org-level key,
+    same one used everywhere else). Also set `DD_SITE` if you're not
+    on the default `datadoghq.com` site.
+  - That's it — `DD_AGENT_HOST` isn't needed here; `ddtrace`'s default
+    (`localhost:8126`) already finds `trace-agent` in the same
+    container.
+  - If you'd rather not run APM at all, set `DD_TRACE_ENABLED=false`
+    instead — `ddtrace-run` stops trying to connect entirely, no log
+    noise, no process running.
 
 **3. Database metrics (Neon → Datadog).** Entirely in Neon's
 dashboard, no Render or app config at all: Neon Console → your
