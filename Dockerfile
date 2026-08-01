@@ -16,6 +16,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=dd-agent /opt/datadog-agent/embedded/bin/trace-agent /opt/datadog-agent/embedded/bin/trace-agent
 COPY --from=dd-agent /etc/datadog-agent/datadog.yaml.example /etc/datadog-agent/datadog.yaml
 
+# trace-agent normally shells out to the full core `agent` binary to
+# resolve its own hostname when it isn't told one -- a binary we
+# deliberately didn't copy in (see the comment above). Setting this
+# explicitly skips that fallback entirely instead of needing the full
+# agent just to answer one question trace-agent otherwise asks it.
+ENV DD_HOSTNAME=sanchay-api
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
