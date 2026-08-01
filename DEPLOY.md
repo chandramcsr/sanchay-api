@@ -205,3 +205,45 @@ specifically before assuming anything else is wrong.
 - Rotating `JWT_SECRET_KEY` invalidates every existing session
   (all users get logged out) — expected and fine, but good to know
   before rotating it on a whim in production.
+
+## Observability: Datadog (optional)
+
+Sentry (error tracking) is wired in by default — see `SENTRY_DSN` in
+`.env.example`. Datadog covers three separate things, each set up in
+a different dashboard; none of this is required for the app to run.
+
+**1. Backend logs (Render → Datadog).** Render Dashboard → your
+account/team → Log Streams → Add Log Stream → Datadog. Endpoint is
+the HTTPS intake URL for your Datadog site (e.g.
+`https://http-intake.logs.datadoghq.com/api/v2/logs` for the US1
+site — check your actual site's endpoint, it varies by region).
+Token is your Datadog **organization-level** API key (not an
+application key — Datadog rejects those here). No code change; this
+forwards `sanchay-api`'s existing stdout logs as-is.
+
+**2. Backend APM (request tracing).** `ddtrace` is already wired into
+the Dockerfile (`ddtrace-run uvicorn ...`) — it's a safe no-op until
+it can reach an agent. To actually collect traces:
+  - Deploy Render's official Datadog Agent template
+    (github.com/render-examples/datadog-agent) as its own private
+    service in the same Render account, with `DD_API_KEY` set on
+    *that* service.
+  - On `sanchay-api`'s own Render service, set `DD_AGENT_HOST` to the
+    agent's private-service hostname, plus `DD_TRACE_AGENT_PORT=8126`,
+    `DD_SERVICE=sanchay-api`, `DD_ENV=production` (see `.env.example`
+    for the full list). Render's private networking lets one service
+    reach another by hostname without exposing anything publicly.
+
+**3. Database metrics (Neon → Datadog).** Entirely in Neon's
+dashboard, no Render or app config at all: Neon Console → your
+project → Integrations → Datadog card → Add → paste your Datadog API
+key → pick your Datadog site → enable Metrics (and, if wanted,
+Postgres logs — still in beta as of when this was written).
+
+**4. Frontend RUM.** See `ledger-app`'s own `.env.example` —
+`VITE_DD_RUM_APPLICATION_ID` / `VITE_DD_RUM_CLIENT_TOKEN`, created via
+Datadog → UX Monitoring → RUM Applications → New Application. If both
+`sanchay-api`'s APM and the frontend's RUM are live, a browser session
+and its matching backend trace connect into one view in Datadog
+automatically (`allowedTracingUrls` in `observability.ts` handles
+that) — no separate setup step for the correlation itself.
