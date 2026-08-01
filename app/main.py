@@ -20,7 +20,7 @@ from app.routers import auth, feedback, health, legal, shared_expenses, sync
 
 configure_logging()
 
-APP_VERSION = "1.39.1"
+APP_VERSION = "1.39.2"
 
 # dsn=None is a documented no-op in the SDK, not a crash -- so this is
 # safe to call unconditionally even in local dev/tests where

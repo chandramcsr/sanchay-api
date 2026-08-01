@@ -237,13 +237,12 @@ To turn it on:
   - If you'd rather not run APM at all, set `DD_TRACE_ENABLED=false`
     instead — `ddtrace-run` stops trying to connect entirely, no log
     noise, no process running.
-  - `DD_HOSTNAME` is hardcoded to `sanchay-api` in the Dockerfile
-    (trace-agent needs *a* hostname and the full agent binary that
-    would normally resolve one for it wasn't copied in). Fine for a
-    single instance; if this ever runs as more than one Render
-    instance at once, every instance reports under that same name in
-    Datadog — traces still work, but you'd lose per-instance
-    distinction until that's revisited.
+  - `DD_HOSTNAME` is set in `start.sh` from Render's own
+    `RENDER_INSTANCE_ID` (auto-injected at runtime, not something you
+    configure) — trace-agent needs *a* hostname and the full agent
+    binary that would normally resolve one for it wasn't copied in.
+    Each instance reports under its own identity in Datadog if this
+    ever runs as more than one instance at once.
 
 **3. Database metrics (Neon → Datadog).** Entirely in Neon's
 dashboard, no Render or app config at all: Neon Console → your

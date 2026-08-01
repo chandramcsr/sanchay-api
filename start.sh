@@ -1,6 +1,16 @@
 #!/bin/sh
 set -e
 
+# trace-agent normally shells out to the full core `agent` binary to
+# resolve its own hostname when it isn't told one -- a binary this
+# image deliberately doesn't include (see the Dockerfile comment).
+# RENDER_INSTANCE_ID is Render's own per-instance runtime identifier
+# (auto-injected, not something set on the dashboard) -- exactly what
+# distinguishes one running instance from another if this ever scales
+# to more than one. Falls back to a static name for local dev /
+# docker-compose, where that variable doesn't exist.
+export DD_HOSTNAME="${RENDER_INSTANCE_ID:-sanchay-api-local}"
+
 # trace-agent (not the full Datadog Agent) runs as a second process in
 # this same container -- one paid Render service instead of two.
 # Logs and DB metrics are already covered agentlessly (Render Log
