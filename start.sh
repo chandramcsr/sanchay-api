@@ -11,6 +11,15 @@ set -e
 # docker-compose, where that variable doesn't exist.
 export DD_HOSTNAME="${RENDER_INSTANCE_ID:-sanchay-api-local}"
 
+# Remote Configuration (Datadog pushing config changes to the agent
+# without a redeploy) polls the core agent's local gRPC API for
+# updates -- another thing the core `agent` binary would normally
+# answer and this image doesn't include. Without this, trace-agent
+# retries forever and logs an ERROR-level line every ~15-30s that
+# looks alarming but changes nothing -- traces already send fine
+# without it, and it's not a feature this setup uses anyway.
+export DD_REMOTE_CONFIGURATION_ENABLED=false
+
 # trace-agent (not the full Datadog Agent) runs as a second process in
 # this same container -- one paid Render service instead of two.
 # Logs and DB metrics are already covered agentlessly (Render Log
