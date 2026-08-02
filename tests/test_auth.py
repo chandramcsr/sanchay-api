@@ -1,7 +1,7 @@
 async def test_health(client):
     r = await client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok", "database": "ok"}
+    assert r.json() == {"status": "ok", "database": "ok", "sanchay_app_database": "ok"}
 
 
 async def test_root(client):

@@ -39,3 +39,41 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as db:
         yield db
+
+
+# ---------------------------------------------------------------------------
+# Second, entirely separate database (Sanchaydb) for the
+# server-authoritative accounts/transactions/budgets work. Everything
+# above this line is untouched and still points at neondb -- every
+# existing route (auth, sync, shared expenses, health, legal) keeps
+# working against the exact data it works against today.
+#
+# A genuinely separate DeclarativeBase, not shared metadata with Base
+# above: these are two physically different databases with no possible
+# foreign keys between them, so there's no reason for their table
+# metadata to be entangled, and real reasons for it not to be (Alembic
+# autogenerate diffing one database's models against a mixed-metadata
+# picture that includes tables that will never exist there).
+# ---------------------------------------------------------------------------
+
+sanchay_app_connect_args = (
+    {"check_same_thread": False} if settings.sanchay_app_async_database_url.startswith("sqlite") else {}
+)
+
+sanchay_app_engine = create_async_engine(
+    settings.sanchay_app_async_database_url,
+    connect_args=sanchay_app_connect_args,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
+
+SanchayAppSessionLocal = async_sessionmaker(bind=sanchay_app_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+class SanchayAppBase(DeclarativeBase):
+    pass
+
+
+async def get_sanchay_app_db() -> AsyncGenerator[AsyncSession, None]:
+    async with SanchayAppSessionLocal() as db:
+        yield db

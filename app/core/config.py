@@ -13,6 +13,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "sqlite:///./dev.db"
+
+    # Second, entirely separate database (Sanchaydb on Neon) for the
+    # server-authoritative accounts/transactions/budgets work -- NOT the
+    # same database as `database_url` (neondb, which holds every
+    # existing table: users, sync blobs, shared expenses, health,
+    # legal). Keeping them physically separate was a deliberate call:
+    # ledger-app's existing routes must keep working against the exact
+    # data they work against today, completely unaffected by this new
+    # work. SQLite default matches the existing `database_url` pattern
+    # -- local dev/tests get a working default without needing a real
+    # Sanchaydb provisioned.
+    sanchay_app_database_url: str = "sqlite:///./dev_sanchay_app.db"
+
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 12  # 12 hours — short-lived, renewed via refresh token
@@ -56,6 +69,23 @@ class Settings(BaseSettings):
     sentry_dsn: str | None = None
     sentry_environment: str = "development"
 
+    # Clerk verification for the NEW (accounts/transactions/budgets)
+    # routes only -- existing routes keep using jwt_secret_key above,
+    # completely unrelated to this. clerk_jwt_key is the PEM public key
+    # from Clerk's dashboard (API Keys -> Show JWT public key) --
+    # "networkless" verification (Clerk's own recommended term): no
+    # network call per request to check a token, unlike calling
+    # Clerk's API to verify. clerk_authorized_parties guards against
+    # token replay from an unauthorized origin (the `azp` claim) --
+    # Clerk's own docs are explicit that skipping this check is a real
+    # CSRF exposure, not just defense-in-depth.
+    clerk_jwt_key: str | None = None
+    clerk_authorized_parties: str = ""
+
+    @property
+    def clerk_authorized_parties_list(self) -> list[str]:
+        return [o.strip() for o in self.clerk_authorized_parties.split(",") if o.strip()]
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -80,29 +110,38 @@ class Settings(BaseSettings):
         parameters. Only the async URL is rewritten; the sync engine
         keeps the original untouched.
         """
-        url = self.database_url
-        if url.startswith("postgres://"):
-            url = "postgresql://" + url[len("postgres://") :]
-        if url.startswith("postgresql://") and "+asyncpg" not in url:
-            url = "postgresql+asyncpg://" + url[len("postgresql://") :]
-            # libpq -> asyncpg SSL param translation. libpq's modes
-            # (disable/allow/prefer/require/verify-ca/verify-full) map
-            # onto asyncpg's ssl= values; require/verify-* all become
-            # ssl=require here — asyncpg's "require" performs
-            # certificate verification against the system CA bundle by
-            # default when given a hostname, so this doesn't silently
-            # weaken verify-full into an unverified connection.
-            for mode in ("verify-full", "verify-ca", "require", "prefer", "allow"):
-                if f"sslmode={mode}" in url:
-                    replacement = "ssl=require" if mode in ("require", "verify-ca", "verify-full") else "ssl=prefer"
-                    url = url.replace(f"sslmode={mode}", replacement)
-                    break
-            if "sslmode=disable" in url:
-                url = url.replace("sslmode=disable", "ssl=disable")
-            return url
-        if url.startswith("sqlite://") and "+aiosqlite" not in url:
-            return "sqlite+aiosqlite://" + url[len("sqlite://") :]
+        return _to_async_url(self.database_url)
+
+    @property
+    def sanchay_app_async_database_url(self) -> str:
+        """Same translation as async_database_url, applied to the second
+        (Sanchaydb) connection string — see sanchay_app_database_url."""
+        return _to_async_url(self.sanchay_app_database_url)
+
+
+def _to_async_url(url: str) -> str:
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql://") and "+asyncpg" not in url:
+        url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+        # libpq -> asyncpg SSL param translation. libpq's modes
+        # (disable/allow/prefer/require/verify-ca/verify-full) map
+        # onto asyncpg's ssl= values; require/verify-* all become
+        # ssl=require here — asyncpg's "require" performs
+        # certificate verification against the system CA bundle by
+        # default when given a hostname, so this doesn't silently
+        # weaken verify-full into an unverified connection.
+        for mode in ("verify-full", "verify-ca", "require", "prefer", "allow"):
+            if f"sslmode={mode}" in url:
+                replacement = "ssl=require" if mode in ("require", "verify-ca", "verify-full") else "ssl=prefer"
+                url = url.replace(f"sslmode={mode}", replacement)
+                break
+        if "sslmode=disable" in url:
+            url = url.replace("sslmode=disable", "ssl=disable")
         return url
+    if url.startswith("sqlite://") and "+aiosqlite" not in url:
+        return "sqlite+aiosqlite://" + url[len("sqlite://") :]
+    return url
 
 
 settings = Settings()
