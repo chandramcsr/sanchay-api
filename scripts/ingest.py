@@ -4,7 +4,7 @@ Sanchay docs RAG ingestion pipeline.
 Pipeline: doc file -> split by headers -> sub-split by size -> embed -> insert into Postgres.
 
 Run:
-    pip install sentence-transformers psycopg2-binary --break-system-packages
+    pip install sentence-transformers psycopg2-binary pgvector --break-system-packages
     export DATABASE_URL="postgresql://..."   # your Neon connection string
     python ingest.py path/to/README.md path/to/privacy.html
 """
@@ -15,6 +15,7 @@ import sys
 from dataclasses import dataclass, field
 
 import psycopg2
+from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 
 # ---------------------------------------------------------------------------
@@ -227,6 +228,10 @@ def main():
         sys.exit(1)
 
     conn = psycopg2.connect(dsn)
+    # Without this, psycopg2 has no adapter for a Python list -> pgvector's
+    # `vector` type, and every insert below fails. Must be called on this
+    # connection before any query that touches the embedding column.
+    register_vector(conn)
     total = 0
     try:
         for path in sys.argv[1:]:
