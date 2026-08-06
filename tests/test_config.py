@@ -4,6 +4,12 @@ immediately after it broke a real deploy (switching the database
 host to Neon, whose connection strings carry libpq-style
 ?sslmode=require that asyncpg rejects outright). Each case here is a
 URL shape a real hosting provider actually hands out.
+
+Extended after a second real production boot failure: Neon's
+connection strings also carry ?channel_binding=require, which has no
+asyncpg equivalent at all (not translated, dropped) — a different
+failure from the sslmode one, caught the same way, against the exact
+URL that failed.
 """
 
 from app.core.config import Settings
@@ -60,3 +66,29 @@ def test_other_query_params_survive_the_translation():
     url = _url_for("postgresql://u:p@host/db?sslmode=require&application_name=sanchay")
     assert "ssl=require" in url
     assert "application_name=sanchay" in url  # neighbors untouched
+
+
+def test_neon_url_with_channel_binding_boots_instead_of_crashing():
+    # The actual production failure this test was written for: Neon's
+    # connection strings include channel_binding=require by default
+    # alongside sslmode=require. asyncpg's connect() doesn't recognize
+    # channel_binding as a parameter in any form -- not an unsupported
+    # value, a hard TypeError ("connect() got an unexpected keyword
+    # argument 'channel_binding'") thrown from inside asyncpg itself,
+    # which crashed app startup outright before this fix (caught via a
+    # real Render deploy log, not found in review).
+    url = _url_for(
+        "postgresql://neondb_owner:pw@ep-twilight-truth-pooler.c-2.us-east-1.aws.neon.tech/Sanchaydb"
+        "?sslmode=require&channel_binding=require"
+    )
+    assert url.startswith("postgresql+asyncpg://")
+    assert "channel_binding" not in url  # the thing that actually crashed
+    assert "ssl=require" in url  # sslmode translation still happened alongside it
+
+
+def test_channel_binding_without_sslmode_is_still_dropped():
+    # channel_binding can appear without sslmode too (a user could set
+    # it independently) -- must be dropped regardless of what else is
+    # or isn't present in the query string.
+    url = _url_for("postgresql://u:p@host/db?channel_binding=require")
+    assert "channel_binding" not in url

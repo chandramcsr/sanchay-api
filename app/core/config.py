@@ -1,3 +1,5 @@
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -125,16 +127,30 @@ class Settings(BaseSettings):
         scheme entirely). Translated here so the raw env var never needs
         to change on the hosting side.
 
-        Also translates libpq-style ?sslmode=... (which Neon, Supabase,
-        and most hosted-Postgres connection strings include) into
-        asyncpg's ?ssl=... — asyncpg does not accept sslmode as a
-        keyword AT ALL and crashes with "connect() got an unexpected
-        keyword argument 'sslmode'" if it's left in. psycopg2 (the sync
-        engine Alembic migrations run on) understands sslmode natively,
-        which is why migrations succeed and then the app crashes on the
-        very same URL — the two drivers genuinely speak different query
-        parameters. Only the async URL is rewritten; the sync engine
-        keeps the original untouched.
+        Also translates libpq-style query params (which Neon, Supabase,
+        and most hosted-Postgres connection strings include) into forms
+        asyncpg actually accepts, or drops them if there's no asyncpg
+        equivalent at all:
+          - ?sslmode=... -> ?ssl=... (asyncpg crashes outright with
+            "connect() got an unexpected keyword argument 'sslmode'"
+            if left in)
+          - ?channel_binding=... -> dropped entirely. SCRAM channel
+            binding is a libpq concept with no asyncpg keyword at all —
+            not "unsupported value", asyncpg's connect() doesn't
+            recognize the parameter name in any form. This one was
+            caught by an actual production boot failure against a real
+            Neon connection string (Neon includes channel_binding=
+            require by default), not found in review — worth being
+            deliberately thorough about this translation rather than
+            handling only the params in whatever test connection
+            string happened to get used during development.
+
+        psycopg2 (the sync engine Alembic migrations run on)
+        understands both params natively, which is why migrations
+        succeed and then the app crashes on the very same URL — the
+        two drivers genuinely speak different query parameters. Only
+        the async URL is rewritten; the sync engine keeps the original
+        untouched.
         """
         return _to_async_url(self.database_url)
 
@@ -150,21 +166,45 @@ def _to_async_url(url: str) -> str:
         url = "postgresql://" + url[len("postgres://") :]
     if url.startswith("postgresql://") and "+asyncpg" not in url:
         url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+
+        # Proper query-string parsing, not substring replacement — a
+        # real Neon connection string surfaced exactly why this
+        # matters: it includes channel_binding=require (a libpq/SCRAM
+        # parameter with no asyncpg equivalent at all) alongside
+        # sslmode=require, and naive string replacement on sslmode
+        # alone leaves channel_binding sitting in the URL. SQLAlchemy's
+        # asyncpg dialect passes every query param straight through as
+        # a keyword arg to asyncpg.connect(), which doesn't recognize
+        # channel_binding as a parameter name in any form — not
+        # "unsupported value", a hard TypeError, connection refused
+        # before the app can even start.
+        parsed = urlsplit(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
         # libpq -> asyncpg SSL param translation. libpq's modes
-        # (disable/allow/prefer/require/verify-ca/verify-full) map
-        # onto asyncpg's ssl= values; require/verify-* all become
-        # ssl=require here — asyncpg's "require" performs
-        # certificate verification against the system CA bundle by
-        # default when given a hostname, so this doesn't silently
-        # weaken verify-full into an unverified connection.
-        for mode in ("verify-full", "verify-ca", "require", "prefer", "allow"):
-            if f"sslmode={mode}" in url:
-                replacement = "ssl=require" if mode in ("require", "verify-ca", "verify-full") else "ssl=prefer"
-                url = url.replace(f"sslmode={mode}", replacement)
-                break
-        if "sslmode=disable" in url:
-            url = url.replace("sslmode=disable", "ssl=disable")
-        return url
+        # (disable/allow/prefer/require/verify-ca/verify-full) map onto
+        # asyncpg's ssl= values; require/verify-* all become
+        # ssl=require here — asyncpg's "require" performs certificate
+        # verification against the system CA bundle by default when
+        # given a hostname, so this doesn't silently weaken
+        # verify-full into an unverified connection.
+        sslmode = params.pop("sslmode", None)
+        if sslmode in ("require", "verify-ca", "verify-full"):
+            params["ssl"] = "require"
+        elif sslmode in ("prefer", "allow"):
+            params["ssl"] = "prefer"
+        elif sslmode == "disable":
+            params["ssl"] = "disable"
+
+        # channel_binding (SCRAM channel binding, a libpq-only concept)
+        # has no asyncpg keyword equivalent — SCRAM channel binding
+        # happens transparently as part of asyncpg's own TLS/auth
+        # negotiation when ssl=require, nothing to pass explicitly.
+        # Dropped, not translated, because there's nothing to translate
+        # it to.
+        params.pop("channel_binding", None)
+
+        return urlunsplit(parsed._replace(query=urlencode(params)))
     if url.startswith("sqlite://") and "+aiosqlite" not in url:
         return "sqlite+aiosqlite://" + url[len("sqlite://") :]
     return url
