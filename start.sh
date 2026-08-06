@@ -32,4 +32,14 @@ export DD_REMOTE_CONFIGURATION_ENABLED=false
 /opt/datadog-agent/embedded/bin/trace-agent -config /etc/datadog-agent/datadog.yaml &
 
 alembic upgrade head
+# The second database (Sanchaydb) has its own, entirely separate
+# Alembic environment (alembic_sanchay_app.ini / alembic_sanchay_app/)
+# -- `alembic upgrade head` above only touches the default
+# alembic.ini, which points at the original database. Without this
+# line, Sanchaydb's tables only ever get created by the dev-convenience
+# create_all() fallback in main.py's lifespan (meant for local SQLite
+# testing, not real deploys) -- which works by accident since it
+# creates the same schema, but leaves no alembic_version row, so
+# Alembic has no record any migration ever ran there.
+alembic -c alembic_sanchay_app.ini upgrade head
 exec ddtrace-run uvicorn app.main:app --host 0.0.0.0 --port 8000
