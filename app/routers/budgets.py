@@ -11,11 +11,12 @@ from app.services import budget_service
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
 
-def _to_out(b: Budget) -> BudgetOut:
+def _to_out(b: Budget, spent: float) -> BudgetOut:
     return BudgetOut(
         id=b.id,
         category=b.category,
         monthly_limit=float(b.monthly_limit),
+        spent=spent,
         created_at=b.created_at.isoformat(),
         updated_at=b.updated_at.isoformat() if b.updated_at else None,
     )
@@ -32,7 +33,8 @@ async def upsert_budget(
     budget = await budget_service.upsert_budget(
         db, clerk_user_id=clerk_user_id, category=payload.category, monthly_limit=payload.monthly_limit
     )
-    return _to_out(budget)
+    spent = await budget_service.get_budget_spending(db, clerk_user_id=clerk_user_id, category=budget.category)
+    return _to_out(budget, spent)
 
 
 @router.get("", response_model=list[BudgetOut])
@@ -42,8 +44,8 @@ async def list_budgets(
     clerk_user_id: str = Depends(get_clerk_user_id),
     db: AsyncSession = Depends(get_sanchay_app_db),
 ) -> list[BudgetOut]:
-    budgets = await budget_service.list_budgets(db, clerk_user_id=clerk_user_id)
-    return [_to_out(b) for b in budgets]
+    rows = await budget_service.list_budgets_with_spending(db, clerk_user_id=clerk_user_id)
+    return [_to_out(b, spent) for b, spent in rows]
 
 
 @router.delete("/{budget_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -6,6 +6,19 @@ from app.models.transaction import Transaction
 from app.schemas.accounts import VALID_ACCOUNT_TYPES
 
 
+async def owns_account(db: AsyncSession, *, clerk_user_id: str, account_id: str) -> bool:
+    """Shared ownership check, used anywhere a request references an
+    account_id that needs verifying belongs to the caller before
+    acting on it (creating a transaction against it, creating a
+    recurring rule against it, etc.) -- without this, a user could act
+    on any account_id, including someone else's, just by passing it in
+    a request body."""
+    result = await db.execute(
+        select(Account.id).where(Account.id == account_id, Account.clerk_user_id == clerk_user_id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def create_account(
     db: AsyncSession, *, clerk_user_id: str, name: str, type: str, starting_balance: float, currency: str
 ) -> Account:

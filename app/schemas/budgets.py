@@ -10,5 +10,6 @@ class BudgetOut(BaseModel):
     id: str
     category: str
     monthly_limit: float
+    spent: float
     created_at: str
     updated_at: str | None

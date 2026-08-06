@@ -43,7 +43,7 @@ async def create_transaction(
     )
     if transaction is None:
         # account_id doesn't belong to this user -- 404, not 403 (see
-        # transaction_service._owns_account), same not-found-not-403
+        # account_service.owns_account), same not-found-not-403
         # reasoning used throughout this codebase's service layer.
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Account not found")
     return _to_out(transaction)

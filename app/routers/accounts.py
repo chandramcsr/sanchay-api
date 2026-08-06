@@ -6,7 +6,7 @@ from app.core.database import get_sanchay_app_db
 from app.core.limiter import limiter
 from app.models.account import Account
 from app.schemas.accounts import AccountCreateRequest, AccountOut, AccountUpdateRequest
-from app.services import account_service
+from app.services import account_service, recurring_service
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -55,6 +55,16 @@ async def list_accounts(
     clerk_user_id: str = Depends(get_clerk_user_id),
     db: AsyncSession = Depends(get_sanchay_app_db),
 ) -> list[AccountOut]:
+    # Materialize due recurring transactions before computing balances
+    # -- GET /accounts is the natural first real data call after
+    # sign-in (the frontend lands on /accounts), so this is where a
+    # schedule that's come due gets turned into a real transaction and
+    # reflected in the balance the user is about to see, rather than
+    # requiring a separate action or staying silently un-applied until
+    # something else happens to trigger it. Idempotent and cheap when
+    # nothing's due (see materialize_due_transactions's own docstring).
+    await recurring_service.materialize_due_transactions(db, clerk_user_id=clerk_user_id)
+
     rows = await account_service.list_accounts_with_balance(db, clerk_user_id=clerk_user_id)
     return [_to_out(account, balance) for account, balance in rows]
 

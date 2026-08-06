@@ -3,20 +3,8 @@ from datetime import date as date_type
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.account import Account
 from app.models.transaction import Transaction
-
-
-async def _owns_account(db: AsyncSession, *, clerk_user_id: str, account_id: str) -> bool:
-    """Without this check, a user could post a transaction into any
-    account_id (including someone else's, if guessed or reused) simply
-    by passing it in the request body -- the transaction's own
-    clerk_user_id being correct doesn't imply the account it's being
-    attached to actually belongs to that user."""
-    result = await db.execute(
-        select(Account.id).where(Account.id == account_id, Account.clerk_user_id == clerk_user_id)
-    )
-    return result.scalar_one_or_none() is not None
+from app.services.account_service import owns_account
 
 
 async def create_transaction(
@@ -31,7 +19,7 @@ async def create_transaction(
 ) -> Transaction | None:
     """Returns None if account_id doesn't belong to this user -- the
     router turns that into a 404, same as everywhere else."""
-    if not await _owns_account(db, clerk_user_id=clerk_user_id, account_id=account_id):
+    if not await owns_account(db, clerk_user_id=clerk_user_id, account_id=account_id):
         return None
 
     transaction = Transaction(
