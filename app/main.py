@@ -19,12 +19,13 @@ from app.models import user  # noqa: F401 — registers the model with Base.meta
 from app.models.account import Account  # noqa: F401 — registers with SanchayAppBase.metadata
 from app.models.budget import Budget  # noqa: F401
 from app.models.recurring_rule import RecurringRule  # noqa: F401
+from app.models.savings_goal import SavingsGoal  # noqa: F401
 from app.models.transaction import Transaction  # noqa: F401
-from app.routers import accounts, auth, budgets, feedback, health, legal, recurring_rules, shared_expenses, sync, transactions
+from app.routers import accounts, auth, budgets, feedback, health, legal, recurring_rules, savings_goals, shared_expenses, sync, transactions
 
 configure_logging()
 
-APP_VERSION = "1.41.1"
+APP_VERSION = "1.42.0"
 
 # dsn=None is a documented no-op in the SDK, not a crash -- so this is
 # safe to call unconditionally even in local dev/tests where
@@ -108,6 +109,7 @@ app.include_router(accounts.router, prefix=API_V1_PREFIX)
 app.include_router(transactions.router, prefix=API_V1_PREFIX)
 app.include_router(budgets.router, prefix=API_V1_PREFIX)
 app.include_router(recurring_rules.router, prefix=API_V1_PREFIX)
+app.include_router(savings_goals.router, prefix=API_V1_PREFIX)
 
 
 @app.get("/")
