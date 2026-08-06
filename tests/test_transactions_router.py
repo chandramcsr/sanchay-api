@@ -61,6 +61,31 @@ async def test_list_transactions_filters_by_account_and_date(client, clerk_auth)
     assert results[0]["description"] == "In range"
 
 
+async def test_create_transaction_without_description_succeeds(client, clerk_auth):
+    """Real bug this guards against: the frontend labels this field
+    'Note (optional)' but the backend originally required description
+    with min_length=1 -- a genuine 422 in production when someone left
+    it blank adding a Salary transaction. description is optional now;
+    confirming both "field omitted entirely" and "explicit null" work,
+    since a frontend could reasonably send either."""
+    account_id = await _create_account(client, clerk_auth)
+    r = await client.post(
+        "/api/v1/transactions",
+        headers=clerk_auth("user_alice"),
+        json={"account_id": account_id, "amount": -20, "date": "2026-08-01"},
+    )
+    assert r.status_code == 201
+    assert r.json()["description"] is None
+
+    r2 = await client.post(
+        "/api/v1/transactions",
+        headers=clerk_auth("user_alice"),
+        json={"account_id": account_id, "amount": -20, "description": None, "date": "2026-08-01"},
+    )
+    assert r2.status_code == 201
+    assert r2.json()["description"] is None
+
+
 async def test_ownership_isolation_on_update_and_delete(client, clerk_auth):
     account_id = await _create_account(client, clerk_auth, user="user_alice")
     r = await client.post(

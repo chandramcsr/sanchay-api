@@ -28,6 +28,26 @@ async def test_create_recurring_rule(client, clerk_auth):
     assert r.json()["last_materialized"] is None  # nothing materialized yet
 
 
+async def test_create_recurring_rule_without_description_succeeds(client, clerk_auth):
+    """Same real bug as transactions, same fix -- description is
+    optional (the frontend labels it 'Note (optional)'), not
+    required with min_length=1."""
+    account_id = await _create_account(client, clerk_auth)
+    r = await client.post(
+        "/api/v1/recurring-rules",
+        headers=clerk_auth("user_alice"),
+        json={
+            "account_id": account_id,
+            "amount": 5000,
+            "category": "Salary",
+            "frequency": "monthly",
+            "start_date": "2026-08-01",
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["description"] is None
+
+
 async def test_create_rejects_invalid_frequency(client, clerk_auth):
     account_id = await _create_account(client, clerk_auth)
     r = await client.post(

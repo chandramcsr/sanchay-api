@@ -39,7 +39,7 @@ class Transaction(SanchayAppBase):
     # column, one sign convention, rather than separate amount+type
     # columns that can drift out of sync with each other.
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    description: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(128))
     date: Mapped[date_type] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)

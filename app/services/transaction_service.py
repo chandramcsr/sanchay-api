@@ -13,7 +13,7 @@ async def create_transaction(
     clerk_user_id: str,
     account_id: str,
     amount: float,
-    description: str,
+    description: str | None,
     category: str | None,
     date: str,
 ) -> Transaction | None:
@@ -26,7 +26,7 @@ async def create_transaction(
         clerk_user_id=clerk_user_id,
         account_id=account_id,
         amount=amount,
-        description=description.strip(),
+        description=description.strip() if description and description.strip() else None,
         category=category.strip() if category and category.strip() else None,
         date=date_type.fromisoformat(date),
     )

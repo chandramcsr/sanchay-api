@@ -44,7 +44,7 @@ class RecurringRule(SanchayAppBase):
     # Signed, same convention as Transaction.amount -- positive =
     # income/credit, negative = expense/debit.
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    description: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(128))
     # weekly / biweekly / monthly / quarterly / yearly -- matches
     # recurring_date_math.py's Frequency values exactly; validated at
