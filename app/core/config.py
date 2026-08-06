@@ -71,20 +71,46 @@ class Settings(BaseSettings):
 
     # Clerk verification for the NEW (accounts/transactions/budgets)
     # routes only -- existing routes keep using jwt_secret_key above,
-    # completely unrelated to this. clerk_jwt_key is the PEM public key
-    # from Clerk's dashboard (API Keys -> Show JWT public key) --
-    # "networkless" verification (Clerk's own recommended term): no
+    # completely unrelated to this. clerk_jwt_key is the "JWT
+    # Verification Key" from Clerk's dashboard (API Keys page -- it's
+    # not one of the two keys shown by default, look for an "Advanced"
+    # / "Show JWT public key" expander further down the same page).
+    # "Networkless" verification (Clerk's own recommended term): no
     # network call per request to check a token, unlike calling
     # Clerk's API to verify. clerk_authorized_parties guards against
     # token replay from an unauthorized origin (the `azp` claim) --
     # Clerk's own docs are explicit that skipping this check is a real
     # CSRF exposure, not just defense-in-depth.
+    #
+    # Clerk's dashboard deliberately gives this key WITHOUT PEM
+    # header/footer/line-wrapping -- a single base64 line, "for easier
+    # setup" per Clerk's own docs (i.e. it pastes into one env var line
+    # cleanly). clerk_jwt_key_pem below wraps it into the full PEM form
+    # cryptography/jose actually need to parse it -- store whatever
+    # Clerk's dashboard actually gives you verbatim in the env var,
+    # this handles either form (already-PEM or headerless) so it isn't
+    # sensitive to which one gets pasted in.
     clerk_jwt_key: str | None = None
     clerk_authorized_parties: str = ""
 
     @property
     def clerk_authorized_parties_list(self) -> list[str]:
         return [o.strip() for o in self.clerk_authorized_parties.split(",") if o.strip()]
+
+    @property
+    def clerk_jwt_key_pem(self) -> str | None:
+        if not self.clerk_jwt_key:
+            return None
+        key = self.clerk_jwt_key.strip()
+        if key.startswith("-----BEGIN"):
+            return key
+        # Headerless single-line form -- wrap into standard PEM: 64
+        # chars per line between BEGIN/END markers. Some parsers tolerate
+        # unwrapped single-line base64 between the markers, but not all
+        # do, and this costs nothing to get exactly right rather than
+        # relying on a parser being lenient.
+        lines = [key[i : i + 64] for i in range(0, len(key), 64)]
+        return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----\n"
 
     @property
     def cors_origin_list(self) -> list[str]:

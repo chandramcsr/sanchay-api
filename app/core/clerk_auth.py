@@ -42,7 +42,7 @@ async def get_clerk_user_id(
     if credentials is None:
         raise _unauthorized
 
-    if not settings.clerk_jwt_key:
+    if not settings.clerk_jwt_key_pem:
         # Fails loudly rather than silently accepting unverifiable
         # tokens -- same philosophy as jwt_secret_key having no
         # fallback default elsewhere in this config. A misconfigured
@@ -56,7 +56,7 @@ async def get_clerk_user_id(
     try:
         payload = jwt.decode(
             credentials.credentials,
-            settings.clerk_jwt_key,
+            settings.clerk_jwt_key_pem,
             algorithms=["RS256"],
         )
     except JWTError:
