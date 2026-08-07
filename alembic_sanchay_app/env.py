@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.database import SanchayAppBase
 from app.models.account import Account  # noqa: F401 — registers with SanchayAppBase.metadata
 from app.models.budget import Budget  # noqa: F401
+from app.models.discussion import Discussion  # noqa: F401
 from app.models.recurring_rule import RecurringRule  # noqa: F401
 from app.models.savings_goal import SavingsGoal  # noqa: F401
 from app.models.transaction import Transaction  # noqa: F401
