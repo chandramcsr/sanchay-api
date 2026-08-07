@@ -3,10 +3,17 @@ from datetime import date as date_type
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String
+from sqlalchemy import Date, DateTime, ForeignKey, Index, JSON, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import SanchayAppBase
+
+# all-MiniLM-L6-v2 (sentence-transformers) produces 384-dim vectors --
+# small and CPU-fast, the right tradeoff at this scale (one user, a
+# few thousand transactions, not a search engine). If the embedding
+# model ever changes, this dimension and every stored vector must
+# change together -- see embedding_service.py.
+EMBEDDING_DIM = 384
 
 
 def _uuid() -> str:
@@ -42,5 +49,17 @@ class Transaction(SanchayAppBase):
     description: Mapped[str | None] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(128))
     date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    # Embedding of the transaction rendered as a natural-language
+    # sentence (see embedding_service.transaction_to_text), stored as
+    # plain JSON rather than pgvector's native Vector type -- that
+    # type is Postgres-only and has no SQLite equivalent, which would
+    # break the test suite (in-memory SQLite). At this app's actual
+    # scale (one user, a few thousand transactions) exact cosine
+    # similarity computed in Python is fast enough that an ANN index
+    # buys nothing -- that tradeoff flips well before a few hundred
+    # thousand vectors, not at this size. Nullable because existing
+    # rows need a separate backfill, not because a transaction can
+    # meaningfully lack one long-term.
+    embedding: Mapped[list[float] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=_now)

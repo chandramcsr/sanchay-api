@@ -7,6 +7,7 @@ from app.core.limiter import limiter
 from app.models.transaction import Transaction
 from app.schemas.transactions import TransactionCreateRequest, TransactionOut, TransactionUpdateRequest
 from app.services import transaction_service
+from app.services.embedding_service import get_document_embed_fn
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -31,6 +32,7 @@ async def create_transaction(
     payload: TransactionCreateRequest,
     clerk_user_id: str = Depends(get_clerk_user_id),
     db: AsyncSession = Depends(get_sanchay_app_db),
+    embed_fn=Depends(get_document_embed_fn),
 ) -> TransactionOut:
     transaction = await transaction_service.create_transaction(
         db,
@@ -40,6 +42,7 @@ async def create_transaction(
         description=payload.description,
         category=payload.category,
         date=payload.date,
+        embed_fn=embed_fn,
     )
     if transaction is None:
         # account_id doesn't belong to this user -- 404, not 403 (see
@@ -79,6 +82,7 @@ async def update_transaction(
     payload: TransactionUpdateRequest,
     clerk_user_id: str = Depends(get_clerk_user_id),
     db: AsyncSession = Depends(get_sanchay_app_db),
+    embed_fn=Depends(get_document_embed_fn),
 ) -> TransactionOut:
     transaction = await transaction_service.update_transaction(
         db,
@@ -88,6 +92,7 @@ async def update_transaction(
         description=payload.description,
         category=payload.category,
         date=payload.date,
+        embed_fn=embed_fn,
     )
     if transaction is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)

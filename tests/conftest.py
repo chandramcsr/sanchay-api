@@ -107,6 +107,47 @@ async def override_get_sanchay_app_db():
 
 app.dependency_overrides[get_sanchay_app_db] = override_get_sanchay_app_db
 
+
+def stub_embed_fn(text: str) -> list[float]:
+    """
+    A deterministic, dependency-free stand-in for the real embedding
+    model (sentence-transformers isn't installed in this environment
+    -- see embedding_service.py's module docstring). This is a small
+    "hashing trick" bag-of-words vector, not a random one: texts that
+    share more words hash into more of the same buckets and end up
+    with genuinely higher cosine similarity, which is what lets
+    retrieval tests verify real behavior (a relevant transaction
+    actually ranks above an irrelevant one) rather than just asserting
+    "a vector of the right length came back."
+    """
+    dim = 64
+    vector = [0.0] * dim
+    for word in text.lower().split():
+        vector[hash(word) % dim] += 1.0
+    return vector
+
+
+def stub_generate_fn(system: str, user: str) -> str:
+    """
+    A minimal stand-in for the real Claude call. Echoes back the
+    passage labels it was given so citation-verification tests have
+    something realistic to check against, without any network call or
+    API key.
+    """
+    import re
+
+    labels = re.findall(r"\[P\d+\]", user)
+    cite = labels[0] if labels else ""
+    return f"Based on the transactions provided {cite}.".strip()
+
+
+from app.routers.ai import get_generate_fn  # noqa: E402
+from app.services.embedding_service import get_document_embed_fn, get_query_embed_fn  # noqa: E402
+
+app.dependency_overrides[get_document_embed_fn] = lambda: stub_embed_fn
+app.dependency_overrides[get_query_embed_fn] = lambda: stub_embed_fn
+app.dependency_overrides[get_generate_fn] = lambda: stub_generate_fn
+
 # Import registers Account/Transaction/Budget on SanchayAppBase.metadata
 # -- needed before _schema's create_all below, same reasoning as
 # `from app.models import user` in app/main.py itself.
