@@ -1,5 +1,3 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-
 fastapi==0.139.0
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.51
@@ -15,5 +13,3 @@ slowapi==0.1.10
 resend==2.32.2
 sentry-sdk[fastapi]==2.66.0
 ddtrace==4.12.2
-anthropic==0.69.0
-sentence-transformers==3.3.1

@@ -95,13 +95,6 @@ class Settings(BaseSettings):
     clerk_jwt_key: str | None = None
     clerk_authorized_parties: str = ""
 
-    # Ask Sanchay (RAG assistant) -- Claude for generation only, not
-    # embeddings (Anthropic doesn't offer an embeddings endpoint).
-    # None/empty means the feature is disabled: the router checks this
-    # and returns a clear 503 rather than a confusing downstream error
-    # when the key isn't configured.
-    anthropic_api_key: str | None = None
-
     @property
     def clerk_authorized_parties_list(self) -> list[str]:
         return [o.strip() for o in self.clerk_authorized_parties.split(",") if o.strip()]
