@@ -42,6 +42,13 @@ async def get_budget_spending(db: AsyncSession, *, clerk_user_id: str, category:
         Transaction.amount < 0,
         Transaction.date >= month_start,
         Transaction.date <= month_end,
+        # Explicit, not incidental -- transfers are always categorized
+        # "Transfer" so this would never match a real budget category
+        # anyway, but checking transfer_group_id directly matches
+        # ledger-app's own isSpendOrIncome() exactly: moving your own
+        # money between accounts is neither earning nor spending, full
+        # stop, not "happens not to collide with a category name."
+        Transaction.transfer_group_id.is_(None),
     )
     result = await db.execute(query)
     value = result.scalar_one_or_none()
@@ -73,6 +80,7 @@ async def list_budgets_with_spending(db: AsyncSession, *, clerk_user_id: str) ->
                 Transaction.amount < 0,
                 Transaction.date >= month_start,
                 Transaction.date <= month_end,
+                Transaction.transfer_group_id.is_(None),
             ),
         )
         .where(Budget.clerk_user_id == clerk_user_id)

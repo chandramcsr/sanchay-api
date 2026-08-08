@@ -5,7 +5,13 @@ from app.core.clerk_auth import get_clerk_user_id
 from app.core.database import get_sanchay_app_db
 from app.core.limiter import limiter
 from app.models.transaction import Transaction
-from app.schemas.transactions import TransactionCreateRequest, TransactionOut, TransactionUpdateRequest
+from app.schemas.transactions import (
+    TransactionCreateRequest,
+    TransactionOut,
+    TransactionUpdateRequest,
+    TransferCreateRequest,
+    TransferOut,
+)
 from app.services import transaction_service
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -19,6 +25,7 @@ def _to_out(t: Transaction) -> TransactionOut:
         description=t.description,
         category=t.category,
         date=t.date.isoformat(),
+        transfer_group_id=t.transfer_group_id,
         created_at=t.created_at.isoformat(),
         updated_at=t.updated_at.isoformat() if t.updated_at else None,
     )
@@ -47,6 +54,34 @@ async def create_transaction(
         # reasoning used throughout this codebase's service layer.
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Account not found")
     return _to_out(transaction)
+
+
+@router.post("/transfer", response_model=TransferOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute")
+async def create_transfer(
+    request: Request,
+    payload: TransferCreateRequest,
+    clerk_user_id: str = Depends(get_clerk_user_id),
+    db: AsyncSession = Depends(get_sanchay_app_db),
+) -> TransferOut:
+    result = await transaction_service.create_transfer(
+        db,
+        clerk_user_id=clerk_user_id,
+        from_account_id=payload.from_account_id,
+        to_account_id=payload.to_account_id,
+        amount=payload.amount,
+        date=payload.date,
+        note=payload.note,
+    )
+    if result is None:
+        # Either account doesn't belong to this user, or both ids are
+        # the same -- 404 either way (see owns_account's not-found-
+        # not-403 reasoning) rather than distinguishing which failure
+        # in the response, same as everywhere else account ownership
+        # is checked.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Account not found, or from/to are the same account")
+    from_leg, to_leg = result
+    return TransferOut(from_transaction=_to_out(from_leg), to_transaction=_to_out(to_leg))
 
 
 @router.get("", response_model=list[TransactionOut])

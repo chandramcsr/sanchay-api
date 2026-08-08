@@ -28,6 +28,7 @@ class Transaction(SanchayAppBase):
         # of making Postgres intersect two separate single-column
         # indexes on every query.
         Index("ix_transactions_clerk_user_id_date", "clerk_user_id", "date"),
+        Index("ix_transactions_transfer_group_id", "transfer_group_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -42,5 +43,16 @@ class Transaction(SanchayAppBase):
     description: Mapped[str | None] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(128))
     date: Mapped[date_type] = mapped_column(Date, nullable=False)
+    # Links the two legs of a transfer (an expense leg on the source
+    # account, an income leg on the destination) -- matches
+    # ledger-app's own model exactly (transferGroupId in
+    # src/types.ts/lib/accounts.ts). NULL for every ordinary
+    # transaction. Balances are unaffected by this (both legs are real
+    # money movement, counted normally); spend/income statistics
+    # exclude anything with a non-null value here -- moving your own
+    # money between accounts is neither earning nor spending, which is
+    # exactly why a credit card payment is a transfer from checking,
+    # not an expense.
+    transfer_group_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=_now)

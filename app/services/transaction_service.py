@@ -1,8 +1,10 @@
 from datetime import date as date_type
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.services.account_service import owns_account
 
@@ -34,6 +36,72 @@ async def create_transaction(
     await db.commit()
     await db.refresh(transaction)
     return transaction
+
+
+async def create_transfer(
+    db: AsyncSession,
+    *,
+    clerk_user_id: str,
+    from_account_id: str,
+    to_account_id: str,
+    amount: float,
+    date: str,
+    note: str | None,
+) -> tuple[Transaction, Transaction] | None:
+    """
+    Matches ledger-app's createTransfer exactly: two linked
+    transactions sharing a transfer_group_id, an expense leg on the
+    source account and an income leg on the destination, both real
+    money movement (a credit card payment IS a transfer from
+    checking, not an expense against either account) -- see the
+    Transaction model's own docstring for the full reasoning.
+
+    Returns None if either account doesn't belong to this user, or if
+    both account ids are the same (a transfer needs two distinct
+    accounts) -- the router turns either into a 4xx.
+    """
+    if from_account_id == to_account_id:
+        return None
+    if not await owns_account(db, clerk_user_id=clerk_user_id, account_id=from_account_id):
+        return None
+    if not await owns_account(db, clerk_user_id=clerk_user_id, account_id=to_account_id):
+        return None
+
+    result = await db.execute(
+        select(Account).where(Account.id.in_([from_account_id, to_account_id]))
+    )
+    accounts_by_id = {a.id: a for a in result.scalars().all()}
+    from_name = accounts_by_id[from_account_id].name
+    to_name = accounts_by_id[to_account_id].name
+
+    clean_note = note.strip() if note and note.strip() else None
+    parsed_date = date_type.fromisoformat(date)
+    group_id = str(uuid.uuid4())
+
+    from_leg = Transaction(
+        clerk_user_id=clerk_user_id,
+        account_id=from_account_id,
+        amount=-abs(amount),
+        description=clean_note or f"To {to_name}",
+        category="Transfer",
+        date=parsed_date,
+        transfer_group_id=group_id,
+    )
+    to_leg = Transaction(
+        clerk_user_id=clerk_user_id,
+        account_id=to_account_id,
+        amount=abs(amount),
+        description=clean_note or f"From {from_name}",
+        category="Transfer",
+        date=parsed_date,
+        transfer_group_id=group_id,
+    )
+    db.add(from_leg)
+    db.add(to_leg)
+    await db.commit()
+    await db.refresh(from_leg)
+    await db.refresh(to_leg)
+    return from_leg, to_leg
 
 
 async def list_transactions(
@@ -100,6 +168,24 @@ async def delete_transaction(db: AsyncSession, *, clerk_user_id: str, transactio
     if transaction is None:
         return False
 
-    await db.delete(transaction)
+    if transaction.transfer_group_id is not None:
+        # Delete both legs together -- a deliberate improvement over
+        # ledger-app's own behavior, which leaves the other leg
+        # orphaned (still tagged as a transfer, but with no matching
+        # pair) when only one side is deleted. A half-deleted transfer
+        # is a confusing, inconsistent state no user would actually
+        # want; deleting the whole pair is what "delete this transfer"
+        # should mean.
+        pair_result = await db.execute(
+            select(Transaction).where(
+                Transaction.transfer_group_id == transaction.transfer_group_id,
+                Transaction.clerk_user_id == clerk_user_id,
+            )
+        )
+        for leg in pair_result.scalars().all():
+            await db.delete(leg)
+    else:
+        await db.delete(transaction)
+
     await db.commit()
     return True
